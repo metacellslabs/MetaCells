@@ -1,4 +1,5 @@
 import { buildFormulaHelpSection } from "../metacell/runtime/formulas/index.js";
+import { buildChannelHelpSection } from "../../api/channels/connectors/index.js";
 
 export const HELP_SECTIONS = [
   {
@@ -19,6 +20,7 @@ export const HELP_SECTIONS = [
     ],
   },
   buildFormulaHelpSection(),
+  buildChannelHelpSection(),
   {
     title: "Mentioning",
     items: [

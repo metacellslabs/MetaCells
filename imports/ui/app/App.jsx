@@ -6,6 +6,8 @@ import { HelpOverlay } from "../help/HelpOverlay.jsx";
 import {
   AppSettings,
   DEFAULT_AI_PROVIDERS,
+  DEFAULT_CHANNEL_CONNECTORS,
+  DEFAULT_JOB_SETTINGS,
   DEFAULT_SETTINGS_ID,
 } from "../../api/settings/index.js";
 import { decodeWorkbookDocument } from "../../api/sheets/workbook-codec.js";
@@ -42,6 +44,55 @@ function buildProviderDrafts(providers, savedProviders) {
     };
     return acc;
   }, {});
+}
+
+function buildChannelDrafts(connectors, savedChannels) {
+  const registered = Array.isArray(connectors) ? connectors : [];
+  const saved = Array.isArray(savedChannels) ? savedChannels : [];
+
+  return saved.reduce((acc, channel) => {
+    if (!channel || typeof channel !== "object" || !channel.id) return acc;
+    const connector = registered.find((item) => item && item.id === channel.connectorId) || null;
+    const settings = channel.settings && typeof channel.settings === "object" ? channel.settings : {};
+    const nextSettings = { ...settings };
+
+    if (connector && Array.isArray(connector.settingsFields)) {
+      connector.settingsFields.forEach((field) => {
+        if (!Object.prototype.hasOwnProperty.call(nextSettings, field.key)) {
+          nextSettings[field.key] = field.defaultValue == null ? "" : field.defaultValue;
+        }
+      });
+    }
+
+    acc[channel.id] = {
+      id: String(channel.id || ""),
+      connectorId: String(channel.connectorId || ""),
+      label: String(channel.label || connector?.name || ""),
+      enabled: channel.enabled !== false,
+      status: String(channel.status || "pending"),
+      lastTestMessage: String(channel.lastTestMessage || ""),
+      lastSeenUid: Number(channel.lastSeenUid) || 0,
+      lastEventAt: channel.lastEventAt || null,
+      lastPolledAt: channel.lastPolledAt || null,
+      watchError: String(channel.watchError || ""),
+      lastEvent: channel.lastEvent && typeof channel.lastEvent === "object" ? channel.lastEvent : null,
+      settings: nextSettings,
+    };
+    return acc;
+  }, {});
+}
+
+function buildJobSettingsDraft(jobSettings) {
+  const source = jobSettings && typeof jobSettings === "object" ? jobSettings : {};
+  return {
+    workerEnabled: source.workerEnabled !== false,
+    aiChatConcurrency: Number(source.aiChatConcurrency) || DEFAULT_JOB_SETTINGS.aiChatConcurrency,
+    aiChatMaxAttempts: Number(source.aiChatMaxAttempts) || DEFAULT_JOB_SETTINGS.aiChatMaxAttempts,
+    aiChatRetryDelayMs: Number(source.aiChatRetryDelayMs) || DEFAULT_JOB_SETTINGS.aiChatRetryDelayMs,
+    fileExtractConcurrency: Number(source.fileExtractConcurrency) || DEFAULT_JOB_SETTINGS.fileExtractConcurrency,
+    fileExtractMaxAttempts: Number(source.fileExtractMaxAttempts) || DEFAULT_JOB_SETTINGS.fileExtractMaxAttempts,
+    fileExtractRetryDelayMs: Number(source.fileExtractRetryDelayMs) || DEFAULT_JOB_SETTINGS.fileExtractRetryDelayMs,
+  };
 }
 
 function HomePage() {
@@ -163,21 +214,42 @@ function HomePage() {
   );
 }
 
+function readSettingsTabFromUrl(validTabs) {
+  const allowed = Array.isArray(validTabs) ? validTabs : [];
+  const fallback = allowed[0] || "ai";
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    const tab = String(params.get("tab") || "").trim();
+    return allowed.includes(tab) ? tab : fallback;
+  } catch (error) {
+    return fallback;
+  }
+}
+
 function SettingsPage() {
   const SETTINGS_TABS = [
-    { id: "ai", label: "AI Providers" },
-    { id: "channels", label: "Channels" },
-    { id: "general", label: "General" },
-    { id: "advanced", label: "Advanced" },
+    { id: "ai", label: "🤖 AI Providers" },
+    { id: "channels", label: "📨 Channels" },
+    { id: "jobs", label: "🧱 Jobs" },
+    { id: "general", label: "⚙️ General" },
+    { id: "advanced", label: "🛠️ Advanced" },
   ];
+  const SETTINGS_TAB_IDS = SETTINGS_TABS.map((tab) => tab.id);
   const registeredProviders = DEFAULT_AI_PROVIDERS;
+  const registeredChannelConnectors = DEFAULT_CHANNEL_CONNECTORS;
   const defaultProviderId = String(registeredProviders[0] && registeredProviders[0].id || "");
-  const [activeSettingsTab, setActiveSettingsTab] = useState("ai");
+  const [activeSettingsTab, setActiveSettingsTab] = useState(() => readSettingsTabFromUrl(SETTINGS_TAB_IDS));
   const [activeProviderId, setActiveProviderId] = useState(defaultProviderId);
   const [providerDrafts, setProviderDrafts] = useState(() => buildProviderDrafts(registeredProviders));
   const [savingProviderId, setSavingProviderId] = useState("");
   const [isSavingActiveProvider, setIsSavingActiveProvider] = useState(false);
   const [addingChannel, setAddingChannel] = useState("");
+  const [channelDrafts, setChannelDrafts] = useState({});
+  const [savingChannelId, setSavingChannelId] = useState("");
+  const [testingChannelId, setTestingChannelId] = useState("");
+  const [pollingNow, setPollingNow] = useState(false);
+  const [jobSettingsDraft, setJobSettingsDraft] = useState(() => buildJobSettingsDraft(DEFAULT_JOB_SETTINGS));
+  const [savingJobSettings, setSavingJobSettings] = useState(false);
 
   useEffect(() => {
     document.body.classList.add("route-home");
@@ -187,6 +259,26 @@ function SettingsPage() {
       document.body.classList.remove("route-home");
     };
   }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setActiveSettingsTab(readSettingsTabFromUrl(SETTINGS_TAB_IDS));
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    const nextTab = SETTINGS_TAB_IDS.includes(activeSettingsTab) ? activeSettingsTab : SETTINGS_TAB_IDS[0];
+    const params = new URLSearchParams(window.location.search || "");
+    if (params.get("tab") === nextTab) return;
+    params.set("tab", nextTab);
+    const nextUrl = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState({}, "", nextUrl);
+  }, [activeSettingsTab]);
 
   const { isLoading, settings } = useTracker(() => {
     const handle = Meteor.subscribe("settings.default");
@@ -199,8 +291,11 @@ function SettingsPage() {
 
   useEffect(() => {
     const providers = Array.isArray(settings && settings.aiProviders) ? settings.aiProviders : [];
+    const channels = Array.isArray(settings && settings.communicationChannels) ? settings.communicationChannels : [];
     setActiveProviderId((settings && settings.activeAIProviderId) || defaultProviderId);
     setProviderDrafts(buildProviderDrafts(registeredProviders, providers));
+    setChannelDrafts(buildChannelDrafts(registeredChannelConnectors, channels));
+    setJobSettingsDraft(buildJobSettingsDraft(settings && settings.jobSettings));
   }, [settings && settings.updatedAt ? new Date(settings.updatedAt).getTime() : 0]);
 
   const handleProviderDraftChange = (providerId, fieldKey, value) => {
@@ -246,14 +341,124 @@ function SettingsPage() {
       });
   };
 
-  const handleAddChannel = (type) => {
+  const handleAddChannel = (connectorId) => {
     if (addingChannel) return;
-    setAddingChannel(type);
-    Meteor.callAsync("settings.addCommunicationChannel", type)
+    setAddingChannel(connectorId);
+    Meteor.callAsync("settings.addCommunicationChannel", connectorId)
       .then(() => setAddingChannel(""))
       .catch((error) => {
         setAddingChannel("");
         window.alert(error.reason || error.message || "Failed to add communication channel");
+      });
+  };
+
+  const handleChannelDraftChange = (channelId, fieldKey, value, nestedKey) => {
+    setChannelDrafts((current) => ({
+      ...current,
+      [channelId]: {
+        ...(current[channelId] || {}),
+        ...(nestedKey
+          ? {
+              [fieldKey]: {
+                ...((current[channelId] && current[channelId][fieldKey]) || {}),
+                [nestedKey]: value,
+              },
+            }
+          : { [fieldKey]: value }),
+      },
+    }));
+  };
+
+  const handleSaveChannel = (channelId) => {
+    if (savingChannelId) return;
+    const draft = channelDrafts[channelId];
+    if (!draft) return;
+    setSavingChannelId(channelId);
+    Meteor.callAsync("settings.upsertCommunicationChannel", {
+      id: String(draft.id || ""),
+      connectorId: String(draft.connectorId || ""),
+      label: String(draft.label || "").trim(),
+      enabled: draft.enabled !== false,
+      settings: draft.settings || {},
+    })
+      .then(() => setSavingChannelId(""))
+      .catch((error) => {
+        setSavingChannelId("");
+        window.alert(error.reason || error.message || "Failed to save communication channel");
+      });
+  };
+
+  const handleTestChannel = (channelId) => {
+    if (testingChannelId) return;
+    setTestingChannelId(channelId);
+    Meteor.callAsync("settings.testCommunicationChannel", channelId)
+      .then((result) => {
+        setTestingChannelId("");
+        if (result && result.message) window.alert(result.message);
+      })
+      .catch((error) => {
+        setTestingChannelId("");
+        window.alert(error.reason || error.message || "Failed to test communication channel");
+      });
+  };
+
+  const handlePollNow = () => {
+    if (pollingNow) return;
+    setPollingNow(true);
+    Meteor.callAsync("channels.pollNow")
+      .then((result) => {
+        setPollingNow(false);
+        const summary = result && typeof result === "object" ? result : {};
+        const total = Number(summary.total) || 0;
+        const events = Number(summary.events) || 0;
+        const failed = Number(summary.failed) || 0;
+        const polled = Number(summary.polled) || 0;
+        const details = Array.isArray(summary.results)
+          ? summary.results
+              .map((item) => {
+                if (!item) return "";
+                const label = String(item.label || item.channelId || "channel");
+                if (item.error) return `${label}: ${item.error}`;
+                if (item.skipped) return `${label}: ${String(item.reason || "skipped")}`;
+                return `${label}: ${Number(item.events) || 0} event(s)`;
+              })
+              .filter(Boolean)
+              .join("\n")
+          : "";
+        window.alert(
+          `Poll complete.\nChannels: ${total}\nPolled: ${polled}\nNew events: ${events}\nFailed: ${failed}`
+          + (details ? `\n\n${details}` : "")
+        );
+      })
+      .catch((error) => {
+        setPollingNow(false);
+        window.alert(error.reason || error.message || "Failed to poll channels");
+      });
+  };
+
+  const handleJobSettingsDraftChange = (fieldKey, value) => {
+    setJobSettingsDraft((current) => ({
+      ...current,
+      [fieldKey]: value,
+    }));
+  };
+
+  const handleSaveJobSettings = () => {
+    if (savingJobSettings) return;
+    setSavingJobSettings(true);
+    Meteor.callAsync("settings.updateJobSettings", {
+      workerEnabled: jobSettingsDraft.workerEnabled !== false,
+      aiChatConcurrency: Number(jobSettingsDraft.aiChatConcurrency) || DEFAULT_JOB_SETTINGS.aiChatConcurrency,
+      aiChatMaxAttempts: Number(jobSettingsDraft.aiChatMaxAttempts) || DEFAULT_JOB_SETTINGS.aiChatMaxAttempts,
+      aiChatRetryDelayMs: Number(jobSettingsDraft.aiChatRetryDelayMs) || DEFAULT_JOB_SETTINGS.aiChatRetryDelayMs,
+      fileExtractConcurrency: Number(jobSettingsDraft.fileExtractConcurrency) || DEFAULT_JOB_SETTINGS.fileExtractConcurrency,
+      fileExtractMaxAttempts: Number(jobSettingsDraft.fileExtractMaxAttempts) || DEFAULT_JOB_SETTINGS.fileExtractMaxAttempts,
+      fileExtractRetryDelayMs: Number(jobSettingsDraft.fileExtractRetryDelayMs) || DEFAULT_JOB_SETTINGS.fileExtractRetryDelayMs,
+    })
+      .then(() => setSavingJobSettings(false))
+      .catch((error) => {
+        setSavingJobSettings(false);
+        window.alert(error.reason || error.message || "Failed to save job settings");
       });
   };
 
@@ -277,27 +482,120 @@ function SettingsPage() {
             <h2>Communication Channels</h2>
           </div>
           <div className="settings-section-copy">
-            <p>Connect outbound channels that MetaCells can use for communication workflows later.</p>
+            <p>Connector files define settings schema, test/send behavior, event hooks, and formula mention patterns for each channel type.</p>
           </div>
           <div className="settings-channel-actions">
-            <button type="button" onClick={() => handleAddChannel("gmail")} disabled={addingChannel === "gmail"}>
-              {addingChannel === "gmail" ? "Connecting..." : "Connect Gmail"}
+            <button type="button" onClick={handlePollNow} disabled={pollingNow || !communicationChannels.length}>
+              {pollingNow ? "Polling..." : "Poll now"}
             </button>
-            <button type="button" onClick={() => handleAddChannel("whatsapp")} disabled={addingChannel === "whatsapp"}>
-              {addingChannel === "whatsapp" ? "Connecting..." : "Connect WhatsApp"}
-            </button>
+            {registeredChannelConnectors.map((connector) => (
+              <button key={connector.id} type="button" onClick={() => handleAddChannel(connector.id)} disabled={addingChannel === connector.id}>
+                {addingChannel === connector.id ? "Adding..." : `Add ${connector.name}`}
+              </button>
+            ))}
           </div>
 
           {!communicationChannels.length ? (
             <p className="home-empty-note">No communication channels added yet.</p>
           ) : (
             <div className="settings-channel-list">
-              {communicationChannels.map((channel) => (
-                <div key={channel.id} className="settings-channel-item">
-                  <strong>{channel.label}</strong>
-                  <span className="settings-status">{channel.status}</span>
-                </div>
-              ))}
+              {communicationChannels.map((channel) => {
+                const connector = registeredChannelConnectors.find((item) => item.id === channel.connectorId);
+                const draft = channelDrafts[channel.id] || {};
+                const draftSettings = draft.settings || {};
+
+                return (
+                  <div key={channel.id} className="settings-provider-card">
+                    <div className="settings-provider-head">
+                      <strong>{draft.label || channel.label}</strong>
+                      <span className="settings-status">{channel.status}</span>
+                    </div>
+                    <div className="settings-checkbox-row">
+                      <label className="settings-checkbox-label" htmlFor={`channel-${channel.id}-enabled`}>
+                        <input
+                          id={`channel-${channel.id}-enabled`}
+                          type="checkbox"
+                          checked={draft.enabled !== false}
+                          onChange={(event) => handleChannelDraftChange(channel.id, "enabled", event.target.checked)}
+                        />
+                        <span>Enabled</span>
+                      </label>
+                    </div>
+                    <div className="settings-field">
+                      <label className="settings-label" htmlFor={`channel-${channel.id}-label`}>Channel label</label>
+                      <input
+                        id={`channel-${channel.id}-label`}
+                        className="settings-input"
+                        type="text"
+                        value={String(draft.label || channel.label || "")}
+                        onChange={(event) => handleChannelDraftChange(channel.id, "label", event.target.value)}
+                        placeholder="Channel label"
+                      />
+                    </div>
+                    {(connector?.settingsFields || []).map((field) => (
+                      field.key === "label" ? null : (
+                        <div key={field.key} className="settings-field">
+                          <label className="settings-label" htmlFor={`channel-${channel.id}-${field.key}`}>{field.label}</label>
+                          {field.type === "checkbox" ? (
+                            <input
+                              id={`channel-${channel.id}-${field.key}`}
+                              type="checkbox"
+                              checked={Boolean(draftSettings[field.key])}
+                              onChange={(event) => handleChannelDraftChange(channel.id, "settings", event.target.checked, field.key)}
+                            />
+                          ) : (
+                            <input
+                              id={`channel-${channel.id}-${field.key}`}
+                              className="settings-input"
+                              type={field.type === "password" ? "password" : "text"}
+                              value={String(draftSettings[field.key] ?? "")}
+                              onChange={(event) => handleChannelDraftChange(channel.id, "settings", event.target.value, field.key)}
+                              placeholder={field.placeholder || ""}
+                            />
+                          )}
+                        </div>
+                      )
+                    ))}
+                    {connector ? (
+                      <p className="settings-provider-note">
+                        Mentioning: {connector.mentioningFormulas.join(" | ")}
+                      </p>
+                    ) : null}
+                    <div className="settings-kv-list settings-kv-list-compact">
+                      <div className="settings-kv-item">
+                        <span className="settings-label">Last seen UID</span>
+                        <strong>{draft.lastSeenUid || 0}</strong>
+                      </div>
+                      <div className="settings-kv-item">
+                        <span className="settings-label">Last event at</span>
+                        <strong>{draft.lastEventAt ? new Date(draft.lastEventAt).toLocaleString() : "Never"}</strong>
+                      </div>
+                      <div className="settings-kv-item">
+                        <span className="settings-label">Last polled at</span>
+                        <strong>{draft.lastPolledAt ? new Date(draft.lastPolledAt).toLocaleString() : "Never"}</strong>
+                      </div>
+                    </div>
+                    {draft.lastEvent ? (
+                      <div className="settings-channel-event">
+                        <div className="settings-channel-event-head">Latest event</div>
+                        <pre className="settings-channel-event-body">{JSON.stringify(draft.lastEvent, null, 2)}</pre>
+                      </div>
+                    ) : (
+                      <p className="settings-provider-note">No event received yet.</p>
+                    )}
+                    {draft.lastTestMessage ? <p className="settings-provider-note">{draft.lastTestMessage}</p> : null}
+                    {draft.watchError ? <p className="settings-provider-note settings-provider-note-error">{draft.watchError}</p> : null}
+                    <div className="settings-actions">
+                      <button type="button" onClick={() => handleSaveChannel(channel.id)} disabled={savingChannelId === channel.id}>
+                        {savingChannelId === channel.id ? "Saving..." : "Save channel"}
+                      </button>
+                      <button type="button" onClick={() => handleTestChannel(channel.id)} disabled={testingChannelId === channel.id}>
+                        {testingChannelId === channel.id ? "Testing..." : "Test connection"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </>
@@ -329,6 +627,128 @@ function SettingsPage() {
             <div className="settings-kv-item">
               <span className="settings-label">Providers with API keys</span>
               <strong>{configuredSecretsCount}</strong>
+            </div>
+          </div>
+        </>
+      );
+    }
+
+    if (activeSettingsTab === "jobs") {
+      return (
+        <>
+          <div className="home-section-head">
+            <h2>Jobs</h2>
+          </div>
+          <div className="settings-section-copy">
+            <p>Durable server jobs back AI calls and file conversion. These settings are stored in Mongo and are designed to map cleanly to a future external broker.</p>
+          </div>
+          <div className="settings-provider-card">
+            <div className="settings-provider-head">
+              <strong>Worker control</strong>
+              <span className="settings-status">{jobSettingsDraft.workerEnabled ? "Enabled" : "Paused"}</span>
+            </div>
+            <div className="settings-checkbox-row">
+              <label className="settings-checkbox-label" htmlFor="job-settings-worker-enabled">
+                <input
+                  id="job-settings-worker-enabled"
+                  type="checkbox"
+                  checked={jobSettingsDraft.workerEnabled !== false}
+                  onChange={(event) => handleJobSettingsDraftChange("workerEnabled", event.target.checked)}
+                />
+                <span>Enable durable job worker</span>
+              </label>
+            </div>
+            <p className="settings-provider-note">If disabled, queued jobs stay persisted in Mongo and will resume when the worker is re-enabled.</p>
+          </div>
+
+          <div className="settings-provider-card">
+            <div className="settings-provider-head">
+              <strong>AI jobs</strong>
+              <span className="settings-status">applies to server AI queue</span>
+            </div>
+            <div className="settings-field-grid">
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="job-settings-ai-concurrency">Concurrency</label>
+                <input
+                  id="job-settings-ai-concurrency"
+                  className="settings-input"
+                  type="number"
+                  min="1"
+                  value={String(jobSettingsDraft.aiChatConcurrency)}
+                  onChange={(event) => handleJobSettingsDraftChange("aiChatConcurrency", event.target.value)}
+                />
+              </div>
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="job-settings-ai-attempts">Max attempts</label>
+                <input
+                  id="job-settings-ai-attempts"
+                  className="settings-input"
+                  type="number"
+                  min="1"
+                  value={String(jobSettingsDraft.aiChatMaxAttempts)}
+                  onChange={(event) => handleJobSettingsDraftChange("aiChatMaxAttempts", event.target.value)}
+                />
+              </div>
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="job-settings-ai-delay">Retry delay ms</label>
+                <input
+                  id="job-settings-ai-delay"
+                  className="settings-input"
+                  type="number"
+                  min="250"
+                  step="250"
+                  value={String(jobSettingsDraft.aiChatRetryDelayMs)}
+                  onChange={(event) => handleJobSettingsDraftChange("aiChatRetryDelayMs", event.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="settings-provider-card">
+            <div className="settings-provider-head">
+              <strong>File extraction jobs</strong>
+              <span className="settings-status">applies to converter jobs</span>
+            </div>
+            <div className="settings-field-grid">
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="job-settings-file-concurrency">Concurrency</label>
+                <input
+                  id="job-settings-file-concurrency"
+                  className="settings-input"
+                  type="number"
+                  min="1"
+                  value={String(jobSettingsDraft.fileExtractConcurrency)}
+                  onChange={(event) => handleJobSettingsDraftChange("fileExtractConcurrency", event.target.value)}
+                />
+              </div>
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="job-settings-file-attempts">Max attempts</label>
+                <input
+                  id="job-settings-file-attempts"
+                  className="settings-input"
+                  type="number"
+                  min="1"
+                  value={String(jobSettingsDraft.fileExtractMaxAttempts)}
+                  onChange={(event) => handleJobSettingsDraftChange("fileExtractMaxAttempts", event.target.value)}
+                />
+              </div>
+              <div className="settings-field">
+                <label className="settings-label" htmlFor="job-settings-file-delay">Retry delay ms</label>
+                <input
+                  id="job-settings-file-delay"
+                  className="settings-input"
+                  type="number"
+                  min="250"
+                  step="250"
+                  value={String(jobSettingsDraft.fileExtractRetryDelayMs)}
+                  onChange={(event) => handleJobSettingsDraftChange("fileExtractRetryDelayMs", event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="settings-actions">
+              <button type="button" onClick={handleSaveJobSettings} disabled={savingJobSettings}>
+                {savingJobSettings ? "Saving..." : "Save job settings"}
+              </button>
             </div>
           </div>
         </>
@@ -449,7 +869,7 @@ function SettingsPage() {
           <h1>Settings</h1>
           <p className="home-subtitle">Manage AI providers and communication channel connections.</p>
           <div className="home-actions">
-            <a className="home-secondary-link" href="/">Back to metacells</a>
+            <a className="home-secondary-link" href="/">← Back</a>
           </div>
         </div>
       </section>
@@ -477,31 +897,44 @@ function SettingsPage() {
   );
 }
 
-function SheetPage({ sheetId, initialTabId, onOpenHelp }) {
+function SheetPage({ sheetId, initialTabId, onOpenHelp, publishedMode = false }) {
   const appRef = useRef(null);
   const storageRef = useRef(null);
-  const lastStorageJsonRef = useRef("");
+  const lastWorkbookDocumentRef = useRef(null);
+  const lastWorkbookSyncKeyRef = useRef("");
   const [workbookName, setWorkbookName] = useState("");
   const [isRenaming, setIsRenaming] = useState(false);
 
   useEffect(() => {
-    document.body.classList.add("route-sheet");
+    document.body.classList.add(publishedMode ? "route-published-report" : "route-sheet");
     document.body.classList.remove("route-home");
+    document.body.classList.remove("route-settings");
 
     return () => {
       document.body.classList.remove("route-sheet");
+      document.body.classList.remove("route-published-report");
     };
-  }, []);
+  }, [publishedMode]);
 
-  const { isLoading, sheet } = useTracker(() => {
+  const { isLoading, sheet, settings } = useTracker(() => {
     const handle = Meteor.subscribe("sheets.one", sheetId);
+    const settingsHandle = Meteor.subscribe("settings.default");
 
     return {
-      isLoading: !handle.ready(),
+      isLoading: !handle.ready() || !settingsHandle.ready(),
       sheet: Sheets.findOne(sheetId),
+      settings: AppSettings.findOne(DEFAULT_SETTINGS_ID),
     };
   }, [sheetId]);
-  const sheetWorkbookJson = !isLoading && sheet ? JSON.stringify(decodeWorkbookDocument(sheet.workbook || {})) : "";
+  const availableChannels = Array.isArray(settings && settings.communicationChannels)
+    ? settings.communicationChannels
+        .filter((channel) => channel && channel.enabled !== false)
+        .map((channel) => ({
+          id: String(channel.id || ""),
+          label: String(channel.label || "").trim(),
+        }))
+        .filter((channel) => channel.label)
+    : [];
 
   useEffect(() => {
     if (!sheet) return;
@@ -535,15 +968,26 @@ function SheetPage({ sheetId, initialTabId, onOpenHelp }) {
   useEffect(() => {
     if (isLoading || !sheet || appRef.current) return;
 
-    const workbook = sheetWorkbookJson ? JSON.parse(sheetWorkbookJson) : {};
+    const workbookDocument = sheet.workbook || {};
+    const workbook = decodeWorkbookDocument(workbookDocument);
     storageRef.current = createSheetDocStorage(sheetId, workbook);
-    lastStorageJsonRef.current = sheetWorkbookJson;
+    lastWorkbookDocumentRef.current = workbookDocument;
+    lastWorkbookSyncKeyRef.current = String(
+      sheet && sheet.updatedAt && typeof sheet.updatedAt.getTime === "function"
+        ? sheet.updatedAt.getTime()
+        : sheet && sheet.updatedAt
+        ? sheet.updatedAt
+        : "",
+    );
     appRef.current = mountSpreadsheetApp({
       storage: storageRef.current,
       sheetDocumentId: sheetId,
       initialSheetId: initialTabId,
+      availableChannels,
       onActiveSheetChange: (nextTabId) => {
-        const nextPath = nextTabId
+        const nextPath = publishedMode
+          ? `/report/${encodeURIComponent(sheetId)}/${encodeURIComponent(nextTabId || initialTabId || "")}`
+          : nextTabId
           ? `/metacell/${encodeURIComponent(sheetId)}/${encodeURIComponent(nextTabId)}`
           : `/metacell/${encodeURIComponent(sheetId)}`;
         if (window.location.pathname !== nextPath) {
@@ -558,28 +1002,55 @@ function SheetPage({ sheetId, initialTabId, onOpenHelp }) {
       }
       appRef.current = null;
       storageRef.current = null;
-      lastStorageJsonRef.current = "";
+      lastWorkbookDocumentRef.current = null;
+      lastWorkbookSyncKeyRef.current = "";
     };
-  }, [isLoading, sheetId]);
+  }, [isLoading, sheetId, initialTabId, publishedMode]);
+
+  useEffect(() => {
+    if (!appRef.current || typeof appRef.current.setAvailableChannels !== "function") return;
+    appRef.current.setAvailableChannels(availableChannels);
+  }, [JSON.stringify(availableChannels)]);
 
   useEffect(() => {
     if (!appRef.current || !initialTabId) return;
     if (typeof appRef.current.switchToSheet !== "function") return;
-    if (typeof appRef.current.activeSheetId === "string" && appRef.current.activeSheetId === initialTabId) return;
-    appRef.current.switchToSheet(initialTabId);
-  }, [initialTabId]);
+    if (!(typeof appRef.current.activeSheetId === "string" && appRef.current.activeSheetId === initialTabId)) {
+      appRef.current.switchToSheet(initialTabId);
+    }
+    if (publishedMode && typeof appRef.current.setReportMode === "function") {
+      appRef.current.setReportMode("view");
+    }
+  }, [initialTabId, publishedMode]);
 
   useEffect(() => {
     if (isLoading || !sheet || !appRef.current || !storageRef.current) return;
 
-    const nextWorkbookJson = sheetWorkbookJson;
-    if (nextWorkbookJson === lastStorageJsonRef.current) return;
+    const nextWorkbookDocument = sheet.workbook || {};
+    const nextWorkbookSyncKey = String(
+      sheet && sheet.updatedAt && typeof sheet.updatedAt.getTime === "function"
+        ? sheet.updatedAt.getTime()
+        : sheet && sheet.updatedAt
+        ? sheet.updatedAt
+        : "",
+    );
+    if (
+      nextWorkbookDocument === lastWorkbookDocumentRef.current
+      && nextWorkbookSyncKey === lastWorkbookSyncKeyRef.current
+    ) {
+      return;
+    }
     if (typeof appRef.current.hasPendingLocalEdit === "function" && appRef.current.hasPendingLocalEdit()) return;
 
-    lastStorageJsonRef.current = nextWorkbookJson;
-    storageRef.current.replaceAll(nextWorkbookJson ? JSON.parse(nextWorkbookJson) : {});
-    appRef.current.computeAll();
-  }, [isLoading, sheet, sheetWorkbookJson]);
+    lastWorkbookDocumentRef.current = nextWorkbookDocument;
+    lastWorkbookSyncKeyRef.current = nextWorkbookSyncKey;
+    storageRef.current.replaceAll(decodeWorkbookDocument(nextWorkbookDocument));
+    if (typeof appRef.current.renderCurrentSheetFromStorage === "function") {
+      appRef.current.renderCurrentSheetFromStorage();
+    } else {
+      appRef.current.computeAll();
+    }
+  }, [isLoading, sheet]);
 
   if (isLoading) {
     return <main className="sheet-loading">Loading metacell...</main>;
@@ -589,13 +1060,23 @@ function SheetPage({ sheetId, initialTabId, onOpenHelp }) {
     return (
       <main className="sheet-loading">
         <p>Metacell not found.</p>
-        <a href="/">Back to metacells</a>
+        <a href="/">← Back</a>
       </main>
     );
   }
 
+  const handlePublishReport = () => {
+    if (!appRef.current || typeof appRef.current.publishCurrentReport !== "function") return;
+    appRef.current.publishCurrentReport();
+  };
+
+  const handleExportPdf = () => {
+    if (!appRef.current || typeof appRef.current.exportCurrentReportPdf !== "function") return;
+    appRef.current.exportCurrentReportPdf();
+  };
+
   return (
-    <div className="sheet-page-shell">
+    <div className={`sheet-page-shell${publishedMode ? " is-published-report" : ""}`}>
       <div className="formula-bar">
         <a className="formula-home-link" href="/" aria-label="Home">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -648,6 +1129,8 @@ function SheetPage({ sheetId, initialTabId, onOpenHelp }) {
         <div className="report-toolbar">
           <button type="button" className="report-mode active" data-report-mode="edit">Edit</button>
           <button type="button" className="report-mode" data-report-mode="view">View</button>
+          <button type="button" className="report-action" onClick={handlePublishReport}>Publish</button>
+          <button type="button" className="report-action" onClick={handleExportPdf}>PDF</button>
           <button type="button" className="report-cmd" data-cmd="bold"><b>B</b></button>
           <button type="button" className="report-cmd" data-cmd="italic"><i>I</i></button>
           <button type="button" className="report-cmd" data-cmd="underline"><u>U</u></button>
@@ -670,13 +1153,35 @@ function SheetPage({ sheetId, initialTabId, onOpenHelp }) {
 
 export const App = () => {
   const [isHelpOpen, setIsHelpOpen] = useState(false);
-  const path = window.location.pathname || "/";
+  const [path, setPath] = useState(() => window.location.pathname || "/");
+
+  useEffect(() => {
+    const handleLocationChange = () => {
+      setPath(window.location.pathname || "/");
+    };
+
+    window.addEventListener("popstate", handleLocationChange);
+    return () => {
+      window.removeEventListener("popstate", handleLocationChange);
+    };
+  }, []);
+
   const metacellMatch = path.match(/^\/metacell\/([^/]+)(?:\/([^/]+))?$/);
   const legacySheetMatch = path.match(/^\/sheet\/([^/]+)(?:\/([^/]+))?$/);
+  const reportMatch = path.match(/^\/report\/([^/]+)\/([^/]+)$/);
   const sheetMatch = metacellMatch || legacySheetMatch;
 
   let page = <HomePage />;
-  if (sheetMatch) {
+  if (reportMatch) {
+    page = (
+      <SheetPage
+        sheetId={decodeURIComponent(reportMatch[1])}
+        initialTabId={decodeURIComponent(reportMatch[2])}
+        onOpenHelp={() => setIsHelpOpen(true)}
+        publishedMode={true}
+      />
+    );
+  } else if (sheetMatch) {
     page = (
       <SheetPage
         sheetId={decodeURIComponent(sheetMatch[1])}

@@ -2,7 +2,9 @@
   "name": "metacells",
   "private": true,
   "scripts": {
-    "start": "meteor run",
+    "start": "METACELLS_ROLE=web meteor run --port 3400 --exclude-archs web.browser.legacy --no-lint",
+    "start:web": "METACELLS_ROLE=web meteor run --port 3400 --exclude-archs web.browser.legacy --no-lint",
+    "start:worker": "MONGO_PORT=$(cat .meteor/local/db/METEOR-PORT) && MONGO_URL=mongodb://127.0.0.1:${MONGO_PORT}/meteor ROOT_URL=http://127.0.0.1:3410 METACELLS_ROLE=worker meteor run --port 3410 --exclude-archs web.browser.legacy",
     "test": "meteor test --once --driver-package meteortesting:mocha",
     "test-app": "TEST_WATCH=1 meteor test --full-app --driver-package meteortesting:mocha",
     "visualize": "meteor --production --extra-packages bundle-visualizer"
@@ -10,9 +12,11 @@
   "dependencies": {
     "@babel/runtime": "^7.23.5",
     "@swc/helpers": "^0.5.17",
+    "imapflow": "^1.2.13",
     "meteor-node-stubs": "^1.2.12",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "stream": "^0.0.3"
   },
   "devDependencies": {
     "@meteorjs/rspack": "^1.0.0",

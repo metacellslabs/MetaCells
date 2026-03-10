@@ -1,5 +1,107 @@
+import {
+    extractChannelMentionLabels,
+    formatChannelEventForPrompt,
+    normalizeChannelLabel
+} from "../../../../api/channels/mentioning.js";
+
 // Description: ai methods extracted from FormulaEngine for smaller logical modules.
 export const aiMethods = {
+getImageAttachmentForCell(sheetId, cellId, options) {
+        var targetSheetId = String(sheetId || "");
+        var targetCellId = String(cellId || "").toUpperCase();
+        if (!targetSheetId || !targetCellId || typeof this.parseAttachmentSource !== "function") return null;
+        var raw = String(this.storageService.getCellValue(targetSheetId, targetCellId) || "");
+        var attachment = this.parseAttachmentSource(raw);
+        if (!attachment) return null;
+        var type = String(attachment.type || "").toLowerCase();
+        var previewUrl = String(attachment.previewUrl || "");
+        if (type.indexOf("image/") !== 0 || !previewUrl) return null;
+        if (typeof this.recordDependencyAttachment === "function") {
+            this.recordDependencyAttachment(options, targetSheetId, targetCellId);
+        }
+        return {
+            sheetId: targetSheetId,
+            cellId: targetCellId,
+            name: String(attachment.name || targetCellId),
+            type: String(attachment.type || ""),
+            url: previewUrl
+        };
+    },
+
+resolveImageAttachmentMention(sheetId, token, options) {
+        var sourceSheetId = String(sheetId || "");
+        var rawToken = String(token || "").trim();
+        if (!rawToken) return null;
+
+        var sheetCellMatch = /^(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!([A-Za-z]+[0-9]+)$/.exec(rawToken);
+        if (sheetCellMatch) {
+            var sheetName = sheetCellMatch[1] || sheetCellMatch[2] || "";
+            var refSheetId = this.findSheetIdByName(sheetName);
+            if (!refSheetId) return null;
+            return this.getImageAttachmentForCell(refSheetId, sheetCellMatch[3], options);
+        }
+
+        var localCellMatch = /^([A-Za-z]+[0-9]+)$/.exec(rawToken);
+        if (localCellMatch) {
+            return this.getImageAttachmentForCell(sourceSheetId, localCellMatch[1], options);
+        }
+
+        var named = this.storageService.resolveNamedCell(rawToken);
+        if (named && named.sheetId && named.cellId) {
+            return this.getImageAttachmentForCell(named.sheetId, named.cellId, options);
+        }
+        return null;
+    },
+
+appendAIPromptImageAttachment(options, attachment) {
+        if (!attachment || !options || typeof options !== "object") return;
+        if (!options.aiImageAttachments) options.aiImageAttachments = [];
+        var list = options.aiImageAttachments;
+        var key = [attachment.sheetId, attachment.cellId, attachment.url].join(":");
+        for (var i = 0; i < list.length; i++) {
+            var existing = list[i];
+            if (!existing) continue;
+            var existingKey = [existing.sheetId, existing.cellId, existing.url].join(":");
+            if (existingKey === key) return;
+        }
+        list.push(attachment);
+    },
+
+buildAIUserContent(userPrompt, imageAttachments) {
+        var text = String(userPrompt == null ? "" : userPrompt).trim();
+        var images = Array.isArray(imageAttachments) ? imageAttachments.filter((item) => item && item.url) : [];
+        if (!images.length) return text;
+        var parts = [];
+        if (text) parts.push({ type: "text", text: text });
+        for (var i = 0; i < images.length; i++) {
+            parts.push({
+                type: "image_url",
+                image_url: {
+                    url: String(images[i].url || "")
+                }
+            });
+        }
+        return parts;
+    },
+
+getChannelPayloadMap(options) {
+        var source = options && typeof options === "object" && options.channelPayloads && typeof options.channelPayloads === "object"
+            ? options.channelPayloads
+            : {};
+        return source;
+    },
+
+    getChannelMentionValue(label, options) {
+        var key = normalizeChannelLabel(label);
+        if (!key) return "";
+        var map = this.getChannelPayloadMap(options);
+        return formatChannelEventForPrompt(map[key] || null);
+    },
+
+    isChannelDependencyResolved(label, options) {
+        return !!this.getChannelMentionValue(label, options);
+    },
+
 isCellDependencyResolved(sheetId, cellId) {
         var raw = String(this.storageService.getCellValue(sheetId, cellId) || "");
         if (!raw) return true;
@@ -29,7 +131,7 @@ isRegionDependencyResolved(sheetId, startCellId, endCellId) {
         return true;
     },
 
-arePromptDependenciesResolved(sheetId, text) {
+arePromptDependenciesResolved(sheetId, text, options) {
         var dependencies = this.collectAIPromptDependencies(sheetId, text);
         for (var i = 0; i < dependencies.length; i++) {
             var dependency = dependencies[i];
@@ -40,6 +142,10 @@ arePromptDependenciesResolved(sheetId, text) {
             }
             if (dependency.kind === "region") {
                 if (!this.isRegionDependencyResolved(dependency.sheetId, dependency.startCellId, dependency.endCellId)) return false;
+                continue;
+            }
+            if (dependency.kind === "channel") {
+                if (!this.isChannelDependencyResolved(dependency.label, options)) return false;
             }
         }
         return true;
@@ -120,7 +226,32 @@ collectAIPromptDependencies(sheetId, text) {
             results.push(dependency);
         }
 
+        var channelLabels = extractChannelMentionLabels(source);
+        for (var i = 0; i < channelLabels.length; i++) {
+            var label = normalizeChannelLabel(channelLabels[i]);
+            var key = "channel:" + label;
+            if (!label || seen[key]) continue;
+            seen[key] = true;
+            results.push({
+                kind: "channel",
+                label: label
+            });
+        }
+
         return results;
+    },
+
+    expandChannelMentionsInPromptText(text, options) {
+        var source = String(text == null ? "" : text);
+        if (!source) return "";
+        var self = this;
+        return source.replace(/(^|[^A-Za-z0-9_:/])\/([A-Za-z][A-Za-z0-9_-]*)\b/g, function(match, prefix, label) {
+            if (typeof self.recordDependencyChannel === "function") {
+                self.recordDependencyChannel(options, label);
+            }
+            var resolved = self.getChannelMentionValue(label, options);
+            return String(prefix || "") + String(resolved || "");
+        });
     },
 
 wrapResolvedMentionsForAI(sheetId, text, stack, options) {
@@ -131,6 +262,7 @@ wrapResolvedMentionsForAI(sheetId, text, stack, options) {
         return source.replace(pattern, (_, rangeRawPrefix, qSheetRange, pSheetRange, rangeStart, rangeEnd, localRangeRawPrefix, localRangeStart, localRangeEnd, sheetRawPrefix, qSheetCell, pSheetCell, sheetCellId, plainRawPrefix, plainToken) => {
             try {
                 var resolved = "";
+                var imageAttachment = null;
                 if (rangeStart && rangeEnd) {
                     var rangeSheetName = qSheetRange || pSheetRange || "";
                     var rangeSheetId = this.findSheetIdByName(rangeSheetName);
@@ -143,11 +275,21 @@ wrapResolvedMentionsForAI(sheetId, text, stack, options) {
                     var refSheetId = this.findSheetIdByName(sheetName);
                     if (!refSheetId) return "";
                     var rawMode = !!sheetRawPrefix;
+                    if (!rawMode) {
+                        imageAttachment = this.getImageAttachmentForCell(refSheetId, sheetCellId.toUpperCase(), options);
+                    }
                     resolved = rawMode
                         ? this.getMentionRawValue(refSheetId, sheetCellId.toUpperCase())
                         : this.getMentionValue(refSheetId, sheetCellId.toUpperCase(), stack, options);
                 } else if (plainToken) {
+                    if (!plainRawPrefix) {
+                        imageAttachment = this.resolveImageAttachmentMention(sheetId, plainToken, options);
+                    }
                     resolved = this.getPlainMentionValue(sheetId, plainToken, stack, options, !!plainRawPrefix);
+                }
+                if (imageAttachment) {
+                    this.appendAIPromptImageAttachment(options, imageAttachment);
+                    return "<attached image: " + String(imageAttachment.name || imageAttachment.cellId || "image") + ">";
                 }
                 return "<" + String(resolved == null ? "" : resolved) + ">";
             } catch (e) {
@@ -250,7 +392,7 @@ resolveDirectMentionFormulaRef(sheetId, rawFormula) {
     },
 
 listAI(sheetId, sourceCellId, text, count, forceRefresh, stack, options, fillStartFromIndex) {
-        if (!this.arePromptDependenciesResolved(sheetId, text)) {
+        if (!this.arePromptDependenciesResolved(sheetId, text, options)) {
             return "...";
         }
         var prepared = this.prepareAIPrompt(sheetId, text, stack, options);
@@ -265,6 +407,7 @@ listAI(sheetId, sourceCellId, text, count, forceRefresh, stack, options, fillSta
         }, {
             forceRefresh: !!forceRefresh,
             systemPrompt: prepared.systemPrompt,
+            userContent: prepared.userContent,
             queueMeta: {
                 formulaKind: "list",
                 sourceCellId: sourceCellId,
@@ -475,6 +618,12 @@ listAI(sheetId, sourceCellId, text, count, forceRefresh, stack, options, fillSta
 
 prepareAIPrompt(sheetId, text, stack, options) {
         var rawText = String(text == null ? "" : text);
+        var channelLabels = extractChannelMentionLabels(rawText);
+        for (var c = 0; c < channelLabels.length; c++) {
+            if (typeof this.recordDependencyChannel === "function") {
+                this.recordDependencyChannel(options, channelLabels[c]);
+            }
+        }
         var pattern = /@@(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!([A-Za-z]+[0-9]+)|@@(_?)([A-Za-z_][A-Za-z0-9_]*)/g;
         var contextLines = [];
         var cursor = 0;
@@ -519,13 +668,17 @@ prepareAIPrompt(sheetId, text, stack, options) {
         if (cursor < rawText.length) userParts.push(rawText.slice(cursor));
         var userPrompt = userParts.join("").replace(/\s{2,}/g, " ").trim();
         userPrompt = this.wrapResolvedMentionsForAI(sheetId, userPrompt, stack, options).trim();
+        userPrompt = this.expandChannelMentionsInPromptText(userPrompt, options).replace(/\s{2,}/g, " ").trim();
+        var imageAttachments = options && Array.isArray(options.aiImageAttachments) ? options.aiImageAttachments.slice() : [];
         var systemPrompt = "";
         if (contextLines.length) {
             systemPrompt = "Spreadsheet context:\n" + contextLines.join("\n");
         }
         return {
             userPrompt: userPrompt,
-            systemPrompt: systemPrompt
+            systemPrompt: systemPrompt,
+            imageAttachments: imageAttachments,
+            userContent: this.buildAIUserContent(userPrompt, imageAttachments)
         };
     }
 };

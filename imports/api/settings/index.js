@@ -5,6 +5,10 @@ import {
   getRegisteredAIProviders,
   getRegisteredAIProviderById,
 } from "./providers/index.js";
+import {
+  getRegisteredChannelConnectors,
+  getRegisteredChannelConnectorById,
+} from "../channels/connectors/index.js";
 
 export const AppSettings = new Mongo.Collection("app_settings");
 
@@ -12,6 +16,17 @@ export const DEFAULT_SETTINGS_ID = "default";
 export const DEFAULT_AI_PROVIDERS = getRegisteredAIProviders();
 export const DEFAULT_DEEPSEEK_PROVIDER = getRegisteredAIProviderById("deepseek");
 export const DEFAULT_LM_STUDIO_PROVIDER = getRegisteredAIProviderById("lm-studio");
+export const DEFAULT_CHANNEL_CONNECTORS = getRegisteredChannelConnectors();
+export const DEFAULT_JOB_SETTINGS = {
+  workerEnabled: true,
+  aiChatConcurrency: 3,
+  aiChatMaxAttempts: 3,
+  aiChatRetryDelayMs: 750,
+  fileExtractConcurrency: 1,
+  fileExtractMaxAttempts: 3,
+  fileExtractRetryDelayMs: 1000,
+};
+let cachedJobSettings = { ...DEFAULT_JOB_SETTINGS };
 
 function getDefaultProviderByType(type) {
   const target = String(type || "");
@@ -59,25 +74,113 @@ function createDefaultSettingsDoc() {
     aiProviders: normalizeProviders(DEFAULT_AI_PROVIDERS),
     activeAIProviderId: String(DEFAULT_DEEPSEEK_PROVIDER?.id || DEFAULT_AI_PROVIDERS[0]?.id || ""),
     communicationChannels: [],
+    jobSettings: { ...DEFAULT_JOB_SETTINGS },
     createdAt: now,
     updatedAt: now,
   };
 }
 
+function getDefaultChannelConnectorById(connectorId) {
+  const target = String(connectorId || "");
+  return DEFAULT_CHANNEL_CONNECTORS.find((connector) => connector && connector.id === target) || null;
+}
+
+function normalizeChannelSettings(connector, settings) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const fields = Array.isArray(connector && connector.settingsFields) ? connector.settingsFields : [];
+  const next = {};
+
+  for (let i = 0; i < fields.length; i += 1) {
+    const field = fields[i];
+    const key = String(field.key || "");
+    next[key] = Object.prototype.hasOwnProperty.call(source, key)
+      ? source[key]
+      : (field.defaultValue == null ? "" : field.defaultValue);
+  }
+
+  return next;
+}
+
+function normalizeChannels(channels) {
+  const input = Array.isArray(channels) ? channels : [];
+  return input
+    .filter((channel) => channel && typeof channel === "object")
+    .map((channel) => {
+      const connector = getRegisteredChannelConnectorById(channel.connectorId || channel.type);
+      if (!connector) return null;
+      return {
+        id: String(channel.id || "").trim(),
+        connectorId: connector.id,
+        type: connector.type,
+        label: String(channel.label || connector.name || "").trim(),
+        enabled: channel.enabled !== false,
+        status: String(channel.status || "pending").trim(),
+        settings: normalizeChannelSettings(connector, channel.settings),
+        lastTestMessage: String(channel.lastTestMessage || "").trim(),
+        lastTestAt: channel.lastTestAt || null,
+        lastSeenUid: Number.isFinite(Number(channel.lastSeenUid)) ? Number(channel.lastSeenUid) : 0,
+        lastEvent: channel.lastEvent && typeof channel.lastEvent === "object" ? { ...channel.lastEvent } : null,
+        lastEventAt: channel.lastEventAt || null,
+        lastPolledAt: channel.lastPolledAt || null,
+        watchError: String(channel.watchError || "").trim(),
+        createdAt: channel.createdAt || null,
+        updatedAt: channel.updatedAt || null,
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeJobSettings(jobSettings) {
+  const source = jobSettings && typeof jobSettings === "object" ? jobSettings : {};
+  return {
+    workerEnabled: source.workerEnabled !== false,
+    aiChatConcurrency: Math.max(1, parseInt(source.aiChatConcurrency, 10) || DEFAULT_JOB_SETTINGS.aiChatConcurrency),
+    aiChatMaxAttempts: Math.max(1, parseInt(source.aiChatMaxAttempts, 10) || DEFAULT_JOB_SETTINGS.aiChatMaxAttempts),
+    aiChatRetryDelayMs: Math.max(
+      250,
+      parseInt(source.aiChatRetryDelayMs, 10) || DEFAULT_JOB_SETTINGS.aiChatRetryDelayMs,
+    ),
+    fileExtractConcurrency: Math.max(
+      1,
+      parseInt(source.fileExtractConcurrency, 10) || DEFAULT_JOB_SETTINGS.fileExtractConcurrency,
+    ),
+    fileExtractMaxAttempts: Math.max(
+      1,
+      parseInt(source.fileExtractMaxAttempts, 10) || DEFAULT_JOB_SETTINGS.fileExtractMaxAttempts,
+    ),
+    fileExtractRetryDelayMs: Math.max(
+      250,
+      parseInt(source.fileExtractRetryDelayMs, 10) || DEFAULT_JOB_SETTINGS.fileExtractRetryDelayMs,
+    ),
+  };
+}
+
+function updateCachedJobSettings(jobSettings) {
+  cachedJobSettings = normalizeJobSettings(jobSettings);
+  return cachedJobSettings;
+}
+
 export async function ensureDefaultSettings() {
   const existing = await AppSettings.findOneAsync(DEFAULT_SETTINGS_ID);
-  if (existing) return existing;
+  if (existing) {
+    updateCachedJobSettings(existing.jobSettings);
+    return existing;
+  }
 
   const doc = createDefaultSettingsDoc();
   try {
     await AppSettings.insertAsync(doc);
+    updateCachedJobSettings(doc.jobSettings);
     return doc;
   } catch (error) {
     if (!error || String(error.code || "") !== "11000") {
       throw error;
     }
     const current = await AppSettings.findOneAsync(DEFAULT_SETTINGS_ID);
-    if (current) return current;
+    if (current) {
+      updateCachedJobSettings(current.jobSettings);
+      return current;
+    }
     throw error;
   }
 }
@@ -134,9 +237,19 @@ export async function getActiveAIProvider() {
   return providers.find((item) => item && item.enabled !== false) || normalizeProvider(DEFAULT_AI_PROVIDERS[0], DEFAULT_AI_PROVIDERS[0]);
 }
 
+export async function getJobSettings() {
+  const settings = await ensureDefaultSettings();
+  return normalizeJobSettings(settings && settings.jobSettings);
+}
+
+export function getJobSettingsSync() {
+  return normalizeJobSettings(cachedJobSettings);
+}
+
 if (Meteor.isServer) {
   Meteor.startup(async () => {
-    await ensureDefaultSettings();
+    const settings = await ensureDefaultSettings();
+    updateCachedJobSettings(settings && settings.jobSettings);
     const resetUrl = await resetLMStudioBaseUrlInDb();
     console.log("[settings] lmStudioBaseUrl.reset", { baseUrl: resetUrl });
   });
@@ -149,6 +262,7 @@ if (Meteor.isServer) {
           aiProviders: 1,
           activeAIProviderId: 1,
           communicationChannels: 1,
+          jobSettings: 1,
           createdAt: 1,
           updatedAt: 1,
         },
@@ -222,23 +336,71 @@ if (Meteor.isServer) {
       );
     },
 
-    async "settings.addCommunicationChannel"(type) {
-      check(type, Match.OneOf("gmail", "whatsapp"));
+    async "settings.updateJobSettings"(jobSettings) {
+      check(jobSettings, {
+        workerEnabled: Boolean,
+        aiChatConcurrency: Number,
+        aiChatMaxAttempts: Number,
+        aiChatRetryDelayMs: Number,
+        fileExtractConcurrency: Number,
+        fileExtractMaxAttempts: Number,
+        fileExtractRetryDelayMs: Number,
+      });
 
       await ensureDefaultSettings();
+      const nextJobSettings = normalizeJobSettings(jobSettings);
+
+      await AppSettings.updateAsync(
+        { _id: DEFAULT_SETTINGS_ID },
+        {
+          $set: {
+            jobSettings: nextJobSettings,
+            updatedAt: new Date(),
+          },
+        },
+      );
+
+      updateCachedJobSettings(nextJobSettings);
+      import("../jobs/index.js")
+        .then((module) => {
+          if (module && typeof module.pokeJobsWorker === "function") {
+            module.pokeJobsWorker();
+          }
+        })
+        .catch(() => {});
+      return nextJobSettings;
+    },
+
+    async "settings.addCommunicationChannel"(connectorId) {
+      check(connectorId, String);
+
+      await ensureDefaultSettings();
+      const connector = getDefaultChannelConnectorById(connectorId);
+      if (!connector) {
+        throw new Meteor.Error("channel-connector-not-found", "Communication channel connector not found");
+      }
 
       const current = await AppSettings.findOneAsync(DEFAULT_SETTINGS_ID);
-      const nextChannels = Array.isArray(current && current.communicationChannels)
-        ? [...current.communicationChannels]
-        : [];
-      const existing = nextChannels.find((item) => item && item.type === type);
+      const nextChannels = normalizeChannels(current && current.communicationChannels);
+      const existing = nextChannels.find((item) => item && item.connectorId === connector.id);
       if (!existing) {
         nextChannels.push({
-          id: `${type}-${Date.now()}`,
-          type,
-          label: type === "gmail" ? "Gmail" : "WhatsApp",
+          id: `${connector.id}-${Date.now()}`,
+          connectorId: connector.id,
+          type: connector.type,
+          label: String(connector.settingsFields.find((field) => field.key === "label")?.defaultValue || connector.name),
+          enabled: true,
           status: "pending",
+          settings: normalizeChannelSettings(connector, {}),
           createdAt: new Date(),
+          updatedAt: new Date(),
+          lastTestMessage: "",
+          lastTestAt: null,
+          lastSeenUid: 0,
+          lastEvent: null,
+          lastEventAt: null,
+          lastPolledAt: null,
+          watchError: "",
         });
       }
 

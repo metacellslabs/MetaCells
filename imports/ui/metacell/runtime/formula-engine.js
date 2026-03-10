@@ -28,12 +28,13 @@ export class FormulaEngine {
             var raw = this.storageService.getCellValue(sheetId, cellId);
             var attachment = this.parseAttachmentSource(raw);
             if (attachment) {
-                return String(attachment.content == null ? "" : attachment.content);
+                this.recordDependencyAttachment(options, sheetId, cellId);
+                return this.resolveAttachmentContentOrThrow(attachment);
             }
             if (raw.charAt(0) === "'") {
                 var promptRaw = raw.substring(1);
                 if (!promptRaw.trim()) return "";
-                if (!this.arePromptDependenciesResolved(sheetId, promptRaw)) return "...";
+                if (!this.arePromptDependenciesResolved(sheetId, promptRaw, options)) return "...";
                 var opts = options || {};
                 var preparedPrompt = this.prepareAIPrompt(sheetId, promptRaw, stack, options);
                 var queueMeta = {
@@ -46,6 +47,7 @@ export class FormulaEngine {
                 return this.aiService.ask(preparedPrompt.userPrompt, {
                     forceRefresh: !!opts.forceRefreshAI,
                     systemPrompt: preparedPrompt.systemPrompt,
+                    userContent: preparedPrompt.userContent,
                     queueMeta: queueMeta
                 });
             }
@@ -90,12 +92,76 @@ export class FormulaEngine {
         }
     }
 
+    resolveAttachmentContentOrThrow(attachment) {
+        var source = attachment && typeof attachment === "object" ? attachment : null;
+        if (!source) return "";
+        if (source.pending || (!source.content && !source.previewUrl && !source.name)) {
+            throw new Error("#SELECT_FILE");
+        }
+        return String(source.content == null ? "" : source.content);
+    }
+
+    getDependencyCollector(options) {
+        var opts = options && typeof options === "object" ? options : {};
+        return opts.dependencyCollector && typeof opts.dependencyCollector === "object"
+            ? opts.dependencyCollector
+            : null;
+    }
+
+    recordDependencyCell(options, sheetId, cellId) {
+        var collector = this.getDependencyCollector(options);
+        if (collector && typeof collector.addCell === "function") {
+            collector.addCell(sheetId, String(cellId || "").toUpperCase());
+        }
+    }
+
+    recordDependencyNamedRef(options, name) {
+        var collector = this.getDependencyCollector(options);
+        if (collector && typeof collector.addNamedRef === "function") {
+            collector.addNamedRef(String(name || "").trim());
+        }
+    }
+
+    recordDependencyChannel(options, label) {
+        var collector = this.getDependencyCollector(options);
+        if (collector && typeof collector.addChannel === "function") {
+            collector.addChannel(String(label || "").trim());
+        }
+    }
+
+    recordDependencyAttachment(options, sheetId, cellId) {
+        var collector = this.getDependencyCollector(options);
+        if (collector && typeof collector.addAttachment === "function") {
+            collector.addAttachment(sheetId, String(cellId || "").toUpperCase());
+        }
+    }
+
+    enumerateRegionCellIds(startCellId, endCellId) {
+        var start = this.parseCellId(startCellId);
+        var end = this.parseCellId(endCellId);
+        if (!start || !end) return [];
+
+        var rowStart = Math.min(start.row, end.row);
+        var rowEnd = Math.max(start.row, end.row);
+        var colStart = Math.min(start.col, end.col);
+        var colEnd = Math.max(start.col, end.col);
+        var result = [];
+
+        for (var r = rowStart; r <= rowEnd; r++) {
+            for (var c = colStart; c <= colEnd; c++) {
+                result.push(this.columnIndexToLabel(c) + r);
+            }
+        }
+
+        return result;
+    }
+
     createContext(sheetId, cellId, stack, options) {
         var opts = options || {};
         var forceRefreshAI = !!opts.forceRefreshAI;
         var context = {
             askAI: (text) => {
-                if (!this.arePromptDependenciesResolved(sheetId, text)) return "...";
+                if (!this.arePromptDependenciesResolved(sheetId, text, options)) return "...";
                 var prepared = this.prepareAIPrompt(sheetId, text, stack, options);
                 var queueMeta = {
                     formulaKind: "ask",
@@ -106,6 +172,7 @@ export class FormulaEngine {
                 return this.aiService.ask(prepared.userPrompt, {
                     forceRefresh: forceRefreshAI,
                     systemPrompt: prepared.systemPrompt,
+                    userContent: prepared.userContent,
                     queueMeta: queueMeta
                 });
             },
@@ -115,55 +182,87 @@ export class FormulaEngine {
             sheetRef: (sheetName, refCellId) => {
                 var refSheetId = this.findSheetIdByName(sheetName);
                 if (!refSheetId) throw new Error("Unknown sheet: " + sheetName);
+                this.recordDependencyCell(options, refSheetId, refCellId);
                 return this.evaluateCell(refSheetId, String(refCellId).toUpperCase(), stack, options);
             },
             regionRef: (startCellId, endCellId) => {
+                var regionCellIds = this.enumerateRegionCellIds(startCellId, endCellId);
+                for (var i = 0; i < regionCellIds.length; i++) {
+                    this.recordDependencyCell(options, sheetId, regionCellIds[i]);
+                }
                 return this.regionToCsv(sheetId, startCellId, endCellId, stack);
             },
             sheetRegionRef: (sheetName, startCellId, endCellId) => {
                 var refSheetId = this.findSheetIdByName(sheetName);
                 if (!refSheetId) throw new Error("Unknown sheet: " + sheetName);
+                var regionCellIds = this.enumerateRegionCellIds(startCellId, endCellId);
+                for (var i = 0; i < regionCellIds.length; i++) {
+                    this.recordDependencyCell(options, refSheetId, regionCellIds[i]);
+                }
                 return this.regionToCsv(refSheetId, startCellId, endCellId, stack);
             },
             mentionRegionRef: (startCellId, endCellId) => {
+                var regionCellIds = this.enumerateRegionCellIds(startCellId, endCellId);
+                for (var i = 0; i < regionCellIds.length; i++) {
+                    this.recordDependencyCell(options, sheetId, regionCellIds[i]);
+                }
                 return this.regionToCsv(sheetId, startCellId, endCellId, stack);
             },
             mentionRawRegionRef: (startCellId, endCellId) => {
+                var regionCellIds = this.enumerateRegionCellIds(startCellId, endCellId);
+                for (var i = 0; i < regionCellIds.length; i++) {
+                    this.recordDependencyCell(options, sheetId, regionCellIds[i]);
+                }
                 return this.regionToRawCsv(sheetId, startCellId, endCellId);
             },
             mentionSheetRegionRef: (sheetName, startCellId, endCellId) => {
                 var refSheetId = this.findSheetIdByName(sheetName);
                 if (!refSheetId) throw new Error("Unknown sheet: " + sheetName);
+                var regionCellIds = this.enumerateRegionCellIds(startCellId, endCellId);
+                for (var i = 0; i < regionCellIds.length; i++) {
+                    this.recordDependencyCell(options, refSheetId, regionCellIds[i]);
+                }
                 return this.regionToCsv(refSheetId, startCellId, endCellId, stack);
             },
             mentionRawSheetRegionRef: (sheetName, startCellId, endCellId) => {
                 var refSheetId = this.findSheetIdByName(sheetName);
                 if (!refSheetId) throw new Error("Unknown sheet: " + sheetName);
+                var regionCellIds = this.enumerateRegionCellIds(startCellId, endCellId);
+                for (var i = 0; i < regionCellIds.length; i++) {
+                    this.recordDependencyCell(options, refSheetId, regionCellIds[i]);
+                }
                 return this.regionToRawCsv(refSheetId, startCellId, endCellId);
             },
             namedRef: (cellName) => {
+                this.recordDependencyNamedRef(options, cellName);
                 return this.getNamedOrSpecialValue(sheetId, cellName, stack, options);
             },
             mentionRef: (refCellId) => {
+                this.recordDependencyCell(options, sheetId, refCellId);
                 return this.getMentionValue(sheetId, String(refCellId).toUpperCase(), stack, options);
             },
             mentionRawRef: (refCellId) => {
+                this.recordDependencyCell(options, sheetId, refCellId);
                 return this.getMentionRawValue(sheetId, String(refCellId).toUpperCase());
             },
             mentionSheetRef: (sheetName, refCellId) => {
                 var refSheetId = this.findSheetIdByName(sheetName);
                 if (!refSheetId) throw new Error("Unknown sheet: " + sheetName);
+                this.recordDependencyCell(options, refSheetId, refCellId);
                 return this.getMentionValue(refSheetId, String(refCellId).toUpperCase(), stack, options);
             },
             mentionRawSheetRef: (sheetName, refCellId) => {
                 var refSheetId = this.findSheetIdByName(sheetName);
                 if (!refSheetId) throw new Error("Unknown sheet: " + sheetName);
+                this.recordDependencyCell(options, refSheetId, refCellId);
                 return this.getMentionRawValue(refSheetId, String(refCellId).toUpperCase());
             },
             mentionNamedRef: (cellName) => {
+                this.recordDependencyNamedRef(options, cellName);
                 return this.getNamedOrSpecialValue(sheetId, cellName, stack, options);
             },
             mentionRawNamedRef: (cellName) => {
+                this.recordDependencyNamedRef(options, cellName);
                 return this.getNamedOrSpecialValue(sheetId, cellName, stack, options, true);
             }
         };
@@ -178,11 +277,17 @@ export class FormulaEngine {
         this.cellIds.forEach((id) => {
             Object.defineProperty(context, id, {
                 enumerable: false,
-                get: () => this.evaluateCell(sheetId, id, stack, options)
+                get: () => {
+                    this.recordDependencyCell(options, sheetId, id);
+                    return this.evaluateCell(sheetId, id, stack, options);
+                }
             });
             Object.defineProperty(context, id.toLowerCase(), {
                 enumerable: false,
-                get: () => this.evaluateCell(sheetId, id, stack, options)
+                get: () => {
+                    this.recordDependencyCell(options, sheetId, id);
+                    return this.evaluateCell(sheetId, id, stack, options);
+                }
             });
         });
 

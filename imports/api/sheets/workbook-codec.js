@@ -103,6 +103,60 @@ function createEmptySheetEntry() {
   };
 }
 
+function normalizeDependencyRefList(items, mode) {
+  if (!Array.isArray(items)) return [];
+  const seen = {};
+  const result = [];
+
+  items.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const sheetId = String(item.sheetId || "");
+    const cellId = String(item.cellId || "").toUpperCase();
+    if (!sheetId || !cellId) return;
+    const key = `${sheetId}:${cellId}`;
+    if (seen[key]) return;
+    seen[key] = true;
+    result.push(mode === "attachment"
+      ? { sheetId, cellId }
+      : { sheetId, cellId });
+  });
+
+  return result;
+}
+
+function normalizeStringList(items) {
+  if (!Array.isArray(items)) return [];
+  const seen = {};
+  const result = [];
+
+  items.forEach((item) => {
+    const value = String(item || "").trim();
+    if (!value || seen[value]) return;
+    seen[value] = true;
+    result.push(value);
+  });
+
+  return result;
+}
+
+function normalizeDependencyGraph(graphValue) {
+  const source = isPlainObject(graphValue) ? graphValue : {};
+  const byCellSource = isPlainObject(source.byCell) ? source.byCell : {};
+  const byCell = {};
+
+  Object.keys(byCellSource).forEach((cellKey) => {
+    const entry = isPlainObject(byCellSource[cellKey]) ? byCellSource[cellKey] : {};
+    byCell[String(cellKey)] = {
+      cells: normalizeDependencyRefList(entry.cells),
+      namedRefs: normalizeStringList(entry.namedRefs),
+      channelLabels: normalizeStringList(entry.channelLabels),
+      attachments: normalizeDependencyRefList(entry.attachments, "attachment"),
+    };
+  });
+
+  return { byCell };
+}
+
 function ensureSheetEntry(workbook, sheetId) {
   if (!isPlainObject(workbook.sheets)) workbook.sheets = {};
   if (!isPlainObject(workbook.sheets[sheetId])) {
@@ -191,6 +245,7 @@ export function decodeWorkbookDocument(workbookValue) {
     aiMode: workbook.aiMode === AI_MODE.manual ? AI_MODE.manual : AI_MODE.auto,
     namedCells: isPlainObject(workbook.namedCells) ? { ...workbook.namedCells } : {},
     sheets: isPlainObject(workbook.sheets) ? { ...workbook.sheets } : {},
+    dependencyGraph: normalizeDependencyGraph(workbook.dependencyGraph),
     caches: decodeDynamicMapKeys(workbook.caches),
     globals: decodeDynamicMapKeys(workbook.globals),
   };
@@ -212,6 +267,7 @@ export function buildWorkbookFromFlatStorage(flatStorage, previousWorkbook, opti
   workbook.aiMode = source[STORAGE_KEYS.aiMode] === AI_MODE.manual ? AI_MODE.manual : AI_MODE.auto;
   workbook.namedCells = namedCells;
   workbook.sheets = {};
+  workbook.dependencyGraph = previous.dependencyGraph || normalizeDependencyGraph({});
   workbook.caches = {};
   workbook.globals = {};
 
@@ -314,6 +370,7 @@ export function buildWorkbookFromFlatStorage(flatStorage, previousWorkbook, opti
           ? String(cell.value ?? (cell.sourceType === "formula" ? "" : sourceValue))
           : "",
         state: String(cell.state || (cell.sourceType === "formula" ? "stale" : "resolved")),
+        error: String(cell.error || ""),
         generatedBy,
         version: Number(cell.version) || 1,
       };
@@ -409,6 +466,7 @@ export function encodeWorkbookForDocument(workbookValue) {
     aiMode: workbook.aiMode,
     namedCells: { ...workbook.namedCells },
     sheets: { ...workbook.sheets },
+    dependencyGraph: normalizeDependencyGraph(workbook.dependencyGraph),
     caches: encodeDynamicMapKeys(workbook.caches),
     globals: encodeDynamicMapKeys(workbook.globals),
   };

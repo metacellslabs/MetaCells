@@ -32,9 +32,14 @@ function normalizeWorkbook(input) {
         aiMode: workbook.aiMode === AI_MODE.manual ? AI_MODE.manual : AI_MODE.auto,
         namedCells: isPlainObject(workbook.namedCells) ? deepClone(workbook.namedCells) : {},
         sheets: isPlainObject(workbook.sheets) ? deepClone(workbook.sheets) : {},
+        dependencyGraph: isPlainObject(workbook.dependencyGraph) ? deepClone(workbook.dependencyGraph) : { byCell: {} },
         caches: isPlainObject(workbook.caches) ? deepClone(workbook.caches) : {},
         globals: isPlainObject(workbook.globals) ? deepClone(workbook.globals) : {}
     };
+}
+
+function makeDependencyGraphKey(sheetId, cellId) {
+    return String(sheetId || "") + ":" + String(cellId || "").toUpperCase();
 }
 
 function normalizeCellRecord(source, previousCell) {
@@ -86,6 +91,16 @@ export class WorkbookStorageAdapter {
         if (!isPlainObject(sheet.rowHeights)) sheet.rowHeights = {};
         if (typeof sheet.reportContent !== "string") sheet.reportContent = String(sheet.reportContent || "");
         return sheet;
+    }
+
+    ensureDependencyGraph() {
+        if (!isPlainObject(this.workbook.dependencyGraph)) {
+            this.workbook.dependencyGraph = { byCell: {} };
+        }
+        if (!isPlainObject(this.workbook.dependencyGraph.byCell)) {
+            this.workbook.dependencyGraph.byCell = {};
+        }
+        return this.workbook.dependencyGraph;
     }
 
     listSheetIds() {
@@ -146,6 +161,9 @@ export class WorkbookStorageAdapter {
 
         next.error = "";
         sheet.cells[id] = next;
+        if (!previous || String(previous.source || "") !== String(next.source || "")) {
+            this.clearCellDependencies(sheetId, id);
+        }
     }
 
     setComputedCellValue(sheetId, cellId, value, state, errorMessage) {
@@ -158,6 +176,61 @@ export class WorkbookStorageAdapter {
         cell.state = String(state || "resolved");
         cell.error = String(errorMessage || "");
         sheet.cells[id] = cell;
+    }
+
+    setCellRuntimeState(sheetId, cellId, updates) {
+        var sheet = this.ensureSheet(sheetId);
+        if (!sheet) return;
+        var id = String(cellId || "").toUpperCase();
+        var cell = this.getCellRecord(sheetId, id);
+        if (!cell) return;
+        var next = isPlainObject(updates) ? updates : {};
+        if (Object.prototype.hasOwnProperty.call(next, "value")) {
+            cell.value = String(next.value == null ? "" : next.value);
+        }
+        if (Object.prototype.hasOwnProperty.call(next, "state")) {
+            cell.state = String(next.state || "");
+        }
+        if (Object.prototype.hasOwnProperty.call(next, "error")) {
+            cell.error = String(next.error || "");
+        }
+        sheet.cells[id] = cell;
+    }
+
+    getCellDependencies(sheetId, cellId) {
+        var graph = this.ensureDependencyGraph();
+        var key = makeDependencyGraphKey(sheetId, cellId);
+        var entry = isPlainObject(graph.byCell[key]) ? graph.byCell[key] : null;
+        if (!entry) {
+            return {
+                cells: [],
+                namedRefs: [],
+                channelLabels: [],
+                attachments: []
+            };
+        }
+        return deepClone(entry);
+    }
+
+    setCellDependencies(sheetId, cellId, dependencies) {
+        var graph = this.ensureDependencyGraph();
+        var key = makeDependencyGraphKey(sheetId, cellId);
+        var entry = isPlainObject(dependencies) ? deepClone(dependencies) : {};
+        graph.byCell[key] = {
+            cells: Array.isArray(entry.cells) ? entry.cells : [],
+            namedRefs: Array.isArray(entry.namedRefs) ? entry.namedRefs : [],
+            channelLabels: Array.isArray(entry.channelLabels) ? entry.channelLabels : [],
+            attachments: Array.isArray(entry.attachments) ? entry.attachments : []
+        };
+    }
+
+    clearCellDependencies(sheetId, cellId) {
+        var graph = this.ensureDependencyGraph();
+        delete graph.byCell[makeDependencyGraphKey(sheetId, cellId)];
+    }
+
+    getDependencyGraph() {
+        return deepClone(this.ensureDependencyGraph());
     }
 
     getGeneratedCellSource(sheetId, cellId) {

@@ -17,6 +17,16 @@ export class SpreadsheetApp {
         this.sheetDocumentId = String(opts.sheetDocumentId || "");
         this.initialSheetId = String(opts.initialSheetId || "");
         this.onActiveSheetChange = typeof opts.onActiveSheetChange === "function" ? opts.onActiveSheetChange : null;
+        this.availableChannels = Array.isArray(opts.availableChannels)
+            ? opts.availableChannels.map(function(channel) {
+                return channel && typeof channel === "object"
+                    ? {
+                        id: String(channel.id || ""),
+                        label: String(channel.label || "").trim()
+                    }
+                    : null;
+            }).filter(Boolean)
+            : [];
         if (!this.sheetDocumentId) {
             throw new Error("SpreadsheetApp requires sheetDocumentId");
         }
@@ -523,6 +533,7 @@ export class SpreadsheetApp {
         var dependencies = this.formulaEngine.collectAIPromptDependencies(this.activeSheetId, prompt);
         this.aiService.askTable(prepared.userPrompt, spec.cols, spec.rows, {
             systemPrompt: prepared.systemPrompt,
+            userContent: prepared.userContent,
             queueMeta: {
                 formulaKind: "table",
                 sourceCellId: cellId,
@@ -1043,6 +1054,7 @@ export class SpreadsheetApp {
             + "<button type='button' class='sheet-context-item' data-action='delete-row'>Delete row</button>"
             + "<button type='button' class='sheet-context-item' data-action='delete-col'>Delete column</button>"
             + "<div class='sheet-context-sep'></div>"
+            + "<button type='button' class='sheet-context-item' data-action='recalc'>Re-calc</button>"
             + "<button type='button' class='sheet-context-item' data-action='copy'>Copy</button>"
             + "<button type='button' class='sheet-context-item' data-action='paste'>Paste</button>";
         document.body.appendChild(menu);
@@ -1108,6 +1120,10 @@ export class SpreadsheetApp {
 
     openContextMenu(clientX, clientY) {
         var menu = this.ensureContextMenu();
+        var recalcItem = menu.querySelector("[data-action='recalc']");
+        if (recalcItem) {
+            recalcItem.style.display = this.contextMenuState && this.contextMenuState.type === "cell" ? "block" : "none";
+        }
         menu.style.display = "flex";
         menu.style.visibility = "hidden";
 
@@ -1222,7 +1238,7 @@ export class SpreadsheetApp {
         if (start !== end) return null;
         var value = String(input.value == null ? "" : input.value);
         var left = value.slice(0, start);
-        var match = /(^|[^A-Za-z0-9_])(@@?)([A-Za-z0-9_]*)$/.exec(left);
+        var match = /(^|[^A-Za-z0-9_])(@@?|\/)([A-Za-z0-9_-]*)$/.exec(left);
         if (!match) return null;
         var marker = match[2];
         var query = match[3] || "";
@@ -1248,6 +1264,16 @@ export class SpreadsheetApp {
             seen[key] = true;
             items.push({ kind: kind, label: label, token: token, search: search || "" });
         };
+
+        if (marker === "/") {
+            for (var ch = 0; ch < this.availableChannels.length; ch++) {
+                var channel = this.availableChannels[ch];
+                if (!channel || !channel.label) continue;
+                addItem("channel", "/" + channel.label, "/" + channel.label, channel.label + " channel");
+            }
+            items.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+            return items.slice(0, 16);
+        }
 
         var named = this.storage.readNamedCells();
         var namedKeys = Object.keys(named || {}).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
@@ -1371,8 +1397,30 @@ export class SpreadsheetApp {
         this.hideMentionAutocomplete();
     }
 
+    setAvailableChannels(channels) {
+        this.availableChannels = Array.isArray(channels)
+            ? channels.map(function(channel) {
+                return channel && typeof channel === "object"
+                    ? {
+                        id: String(channel.id || ""),
+                        label: String(channel.label || "").trim()
+                    }
+                    : null;
+            }).filter(function(channel) {
+                return !!(channel && channel.label);
+            })
+            : [];
+        if (this.mentionAutocompleteState && this.mentionAutocompleteState.input) {
+            this.updateMentionAutocomplete(this.mentionAutocompleteState.input);
+        }
+    }
+
     runContextMenuAction(action) {
         if (!action || this.isReportActive()) return;
+        if (action === "recalc") {
+            this.recalcContextCell();
+            return;
+        }
         if (action === "copy") {
             this.copySelectedRangeToClipboard();
             return;
@@ -1397,6 +1445,20 @@ export class SpreadsheetApp {
         if (action === "delete-col") {
             this.deleteColumnsAtContext();
         }
+    }
+
+    recalcContextCell() {
+        if (!this.contextMenuState || this.contextMenuState.type !== "cell") return;
+        var cellId = this.cellIdFrom(this.contextMenuState.col, this.contextMenuState.row);
+        var input = this.inputById[cellId];
+        if (!input) return;
+        var raw = String(this.getRawCellValue(cellId) || "");
+        if (!raw || (raw.charAt(0) !== "=" && raw.charAt(0) !== ">" && raw.charAt(0) !== "#" && raw.charAt(0) !== "'")) {
+            return;
+        }
+        this.setActiveInput(input);
+        input.focus();
+        this.aiService.withManualTrigger(() => this.computeAll({ forceRefreshAI: true }));
     }
 
     setupAIModeControls() {
@@ -2334,12 +2396,17 @@ export class SpreadsheetApp {
 
         var scanRow = nextRow;
         var scanCol = nextCol;
+        var lastWithin = null;
         while (isWithin(scanRow, scanCol)) {
+            lastWithin = { row: scanRow, col: scanCol };
             if (isFilled(scanRow, scanCol)) {
                 return this.formatCellId(scanCol, scanRow);
             }
             scanRow += movement[0];
             scanCol += movement[1];
+        }
+        if (lastWithin) {
+            return this.formatCellId(lastWithin.col, lastWithin.row);
         }
         return null;
     }
@@ -3100,6 +3167,41 @@ export class SpreadsheetApp {
         this.fullscreenOverlay.style.display = "none";
     }
 
+    buildPublishedReportUrl() {
+        if (!this.sheetDocumentId || !this.activeSheetId || !this.isReportActive()) return "";
+        var origin = "";
+        try {
+            origin = String(window.location.origin || "");
+        } catch (e) {}
+        return origin + "/report/" + encodeURIComponent(this.sheetDocumentId) + "/" + encodeURIComponent(this.activeSheetId);
+    }
+
+    publishCurrentReport() {
+        if (!this.isReportActive()) return "";
+        this.setReportMode("view");
+        var url = this.buildPublishedReportUrl();
+        if (!url) return "";
+        try {
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+                navigator.clipboard.writeText(url).catch(function() {});
+            }
+        } catch (e) {}
+        try {
+            window.open(url, "_blank", "noopener,noreferrer");
+        } catch (e) {}
+        return url;
+    }
+
+    exportCurrentReportPdf() {
+        if (!this.isReportActive()) return;
+        this.setReportMode("view");
+        Meteor.defer(() => {
+            try {
+                window.print();
+            } catch (e) {}
+        });
+    }
+
     setupCellNameControls() {
         this.cellNameInput.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
@@ -3150,6 +3252,12 @@ export class SpreadsheetApp {
             this.applyLinkedReportInput(input);
         });
         this.reportLive.addEventListener("click", (e) => {
+            var reportTabButton = e.target && e.target.closest ? e.target.closest(".report-tab-nav-button") : null;
+            if (reportTabButton) {
+                e.preventDefault();
+                this.activateReportTab(reportTabButton.dataset.reportTabKey || "");
+                return;
+            }
             var fileButton = e.target && e.target.closest ? e.target.closest(".report-file-button") : null;
             var removeButton = e.target && e.target.closest ? e.target.closest(".report-file-remove") : null;
             if (fileButton || removeButton) {
@@ -3233,6 +3341,7 @@ export class SpreadsheetApp {
         this.lastReportLiveHtml = nextHtml;
         this.reportLive.innerHTML = nextHtml;
         this.injectLinkedInputsFromPlaceholders(this.reportLive);
+        this.decorateReportTabs(this.reportLive);
         if (!this.reportLive.innerHTML.trim()) {
             this.reportLive.innerHTML = "<p></p>";
         }
@@ -3286,7 +3395,7 @@ export class SpreadsheetApp {
     replaceMentionInTextNode(textNode) {
         var text = textNode.nodeValue || "";
         if (!text) return;
-        var pattern = /(!@(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[!:][A-Za-z]+[0-9]+:[A-Za-z]+[0-9]+(?:#[A-Za-z0-9 _-]+)?|!@(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[!:][A-Za-z]+[0-9]+(?:#[A-Za-z0-9 _-]+)?|!@[A-Za-z_][A-Za-z0-9_]*(?:#[A-Za-z0-9 _-]+)?|File:(?:_?@[A-Za-z_][A-Za-z0-9_]*|(?:_?@)?(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[!:][A-Za-z]+[0-9]+)(?::\[[^\]]*\])?|Input:(?:_?@[A-Za-z_][A-Za-z0-9_]*|(?:_?@)?(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[!:][A-Za-z]+[0-9]+)(?::\[[^\]]*\])?|(?:_?@)?(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[!:][A-Za-z]+[0-9]+:[A-Za-z]+[0-9]+|_?@[A-Za-z_][A-Za-z0-9_]*|(?:_?@)?(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[:!][A-Za-z]+[0-9]+)/g;
+        var pattern = /(!@(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[!:][A-Za-z]+[0-9]+:[A-Za-z]+[0-9]+(?:#[A-Za-z0-9 _-]+)?|!@(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[!:][A-Za-z]+[0-9]+(?:#[A-Za-z0-9 _-]+)?|!@[A-Za-z_][A-Za-z0-9_]*(?:#[A-Za-z0-9 _-]+)?|Tab:\[[^\]]*\]|File:(?:_?@[A-Za-z_][A-Za-z0-9_]*|(?:_?@)?(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[!:][A-Za-z]+[0-9]+)(?::\[[^\]]*\])?|Input:(?:_?@[A-Za-z_][A-Za-z0-9_]*|(?:_?@)?(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[!:][A-Za-z]+[0-9]+)(?::\[[^\]]*\])?|(?:_?@)?(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[!:][A-Za-z]+[0-9]+:[A-Za-z]+[0-9]+|_?@[A-Za-z_][A-Za-z0-9_]*|(?:_?@)?(?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)[:!][A-Za-z]+[0-9]+)/g;
         pattern.lastIndex = 0;
         var hasMatch = pattern.exec(text);
         if (!hasMatch) return;
@@ -3300,7 +3409,9 @@ export class SpreadsheetApp {
             if (m.index > cursor) {
                 fragment.appendChild(document.createTextNode(text.slice(cursor, m.index)));
             }
-            if (token.indexOf("Input:") === 0) {
+            if (token.indexOf("Tab:[") === 0) {
+                fragment.appendChild(this.createReportTabElement(token));
+            } else if (token.indexOf("Input:") === 0) {
                 var inputSpec = this.parseReportControlToken(token, "Input:");
                 var placeholder = document.createElement("span");
                 placeholder.className = "report-input-placeholder";
@@ -3341,6 +3452,135 @@ export class SpreadsheetApp {
             fragment.appendChild(document.createTextNode(text.slice(cursor)));
         }
         textNode.parentNode.replaceChild(fragment, textNode);
+    }
+
+    createReportTabElement(token) {
+        var title = String(token || "").replace(/^Tab:\[/, "").replace(/\]$/, "").trim();
+        var element = document.createElement("div");
+        element.className = "report-tab-title";
+        element.dataset.reportTabMarker = "true";
+        element.textContent = title || "Section";
+        return element;
+    }
+
+    fragmentHasVisibleContent(fragment) {
+        if (!fragment) return false;
+        var walker = document.createTreeWalker(fragment, NodeFilter.SHOW_ALL, null);
+        var current;
+        while ((current = walker.nextNode())) {
+            if (current.nodeType === Node.ELEMENT_NODE) {
+                return true;
+            }
+            if (current.nodeType === Node.TEXT_NODE && String(current.nodeValue || "").trim()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    getReportTabStateStore() {
+        if (!this.reportActiveTabKeysBySheet) this.reportActiveTabKeysBySheet = {};
+        return this.reportActiveTabKeysBySheet;
+    }
+
+    activateReportTab(tabKey) {
+        if (!this.reportLive) return;
+        var key = String(tabKey || "");
+        if (!key) return;
+        var store = this.getReportTabStateStore();
+        store[this.activeSheetId] = key;
+        var buttons = this.reportLive.querySelectorAll(".report-tab-nav-button");
+        buttons.forEach((button) => {
+            button.classList.toggle("active", button.dataset.reportTabKey === key);
+        });
+        var sections = this.reportLive.querySelectorAll(".report-tab-panel");
+        sections.forEach((section) => {
+            section.hidden = section.dataset.reportTabKey !== key;
+        });
+    }
+
+    decorateReportTabs(root) {
+        if (!root) return;
+        var container = root;
+        while (
+            container.children
+            && container.children.length === 1
+            && container.firstElementChild
+            && /^(DIV|SECTION|ARTICLE)$/i.test(String(container.firstElementChild.tagName || ""))
+            && container.firstElementChild.querySelector(".report-tab-title")
+            && ![].slice.call(container.childNodes).some((node) => {
+                return node.nodeType === Node.TEXT_NODE && String(node.nodeValue || "").trim();
+            })
+        ) {
+            container = container.firstElementChild;
+        }
+        var markers = [].slice.call(container.querySelectorAll(".report-tab-title"));
+        if (!markers.length) return;
+
+        var sections = [];
+        markers.forEach((marker, index) => {
+            sections.push({
+                key: "tab-" + index + "-" + String(marker.textContent || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+                title: String(marker.textContent || "").trim() || ("Section " + (index + 1))
+            });
+        });
+        if (!sections.length) return;
+
+        var preambleRange = document.createRange();
+        preambleRange.setStart(container, 0);
+        preambleRange.setEndBefore(markers[0]);
+        var preambleFragment = preambleRange.cloneContents();
+
+        sections.forEach((section, index) => {
+            var sectionRange = document.createRange();
+            sectionRange.setStartAfter(markers[index]);
+            if (index + 1 < markers.length) {
+                sectionRange.setEndBefore(markers[index + 1]);
+            } else {
+                sectionRange.setEnd(container, container.childNodes.length);
+            }
+            section.fragment = sectionRange.cloneContents();
+        });
+
+        container.innerHTML = "";
+        if (this.fragmentHasVisibleContent(preambleFragment)) {
+            var preambleBlock = document.createElement("div");
+            preambleBlock.className = "report-tab-preamble";
+            preambleBlock.appendChild(preambleFragment);
+            container.appendChild(preambleBlock);
+        }
+
+        var nav = document.createElement("div");
+        nav.className = "report-tab-nav";
+        sections.forEach((section) => {
+            var button = document.createElement("button");
+            button.type = "button";
+            button.className = "report-tab-nav-button";
+            button.dataset.reportTabKey = section.key;
+            button.textContent = section.title;
+            nav.appendChild(button);
+        });
+        container.appendChild(nav);
+
+        var panels = document.createElement("div");
+        panels.className = "report-tab-panels";
+        sections.forEach((section) => {
+            var panel = document.createElement("div");
+            panel.className = "report-tab-panel";
+            panel.dataset.reportTabKey = section.key;
+            if (section.fragment) {
+                panel.appendChild(section.fragment);
+            }
+            panels.appendChild(panel);
+        });
+        container.appendChild(panels);
+
+        var store = this.getReportTabStateStore();
+        var nextKey = store[this.activeSheetId];
+        if (!sections.some((section) => section.key === nextKey)) {
+            nextKey = sections[0].key;
+        }
+        this.activateReportTab(nextKey);
     }
 
     parseReportControlToken(token, prefix) {
@@ -3457,14 +3697,31 @@ export class SpreadsheetApp {
 
         var raw = this.storage.getCellValue(inputResolved.sheetId, inputResolved.cellId);
         var attachment = this.parseAttachmentSource(raw);
+        var isImage = !!attachment
+            && !!attachment.previewUrl
+            && String(attachment.type || "").toLowerCase().indexOf("image/") === 0;
 
-        var choose = document.createElement("button");
-        choose.type = "button";
-        choose.className = "report-file-button";
-        choose.textContent = attachment && attachment.name
-            ? attachment.name
-            : (inputResolved.placeholder || "Choose file");
-        shell.appendChild(choose);
+        if (isImage) {
+            shell.classList.add("has-image-preview");
+            var imageFrame = document.createElement("span");
+            imageFrame.className = "report-file-image-frame";
+            imageFrame.title = String(attachment.name || inputResolved.placeholder || "Attached image");
+
+            var preview = document.createElement("img");
+            preview.className = "report-file-image";
+            preview.src = String(attachment.previewUrl || "");
+            preview.alt = String(attachment.name || "Attached image");
+            imageFrame.appendChild(preview);
+            shell.appendChild(imageFrame);
+        } else {
+            var choose = document.createElement("button");
+            choose.type = "button";
+            choose.className = "report-file-button";
+            choose.textContent = attachment && attachment.name
+                ? attachment.name
+                : (inputResolved.placeholder || "Choose file");
+            shell.appendChild(choose);
+        }
 
         if (attachment && attachment.name) {
             var remove = document.createElement("button");
@@ -4106,6 +4363,81 @@ export class SpreadsheetApp {
         if (keepCrossMention) this.restoreCrossTabMentionEditor();
     }
 
+    renderCurrentSheetFromStorage() {
+        if (this.isReportActive()) {
+            this.renderReportLiveValues(true);
+            return;
+        }
+
+        var formulaCount = 0;
+        for (var i = 0; i < this.inputs.length; i++) {
+            var probeRaw = this.getRawCellValue(this.inputs[i].id);
+            if (probeRaw && (probeRaw.charAt(0) === "=" || probeRaw.charAt(0) === ">" || probeRaw.charAt(0) === "#" || probeRaw.charAt(0) === "'")) formulaCount++;
+        }
+        var formulaDone = 0;
+        this.updateCalcProgress(0, formulaCount);
+
+        this.inputs.forEach((input) => {
+            try {
+                var raw = this.getRawCellValue(input.id);
+                var attachment = this.parseAttachmentSource(raw);
+                var isFormula = !!raw && (raw.charAt(0) === "=" || raw.charAt(0) === ">" || raw.charAt(0) === "#" || raw.charAt(0) === "'");
+                var storedDisplay = this.storage.getCellDisplayValue(this.activeSheetId, input.id);
+                var cellState = this.storage.getCellState(this.activeSheetId, input.id);
+                var errorHint = this.storage.getCellError(this.activeSheetId, input.id);
+                var isEditing = document.activeElement === input;
+                var literalDisplay = !!raw && raw.charAt(0) === "#";
+                var displayValue = isFormula ? storedDisplay : raw;
+
+                if (attachment) {
+                    displayValue = String(attachment.name || (attachment.pending ? "Select file" : "Attached file"));
+                }
+                if (String(displayValue || "").indexOf("#AI_ERROR:") === 0) {
+                    displayValue = String(displayValue).replace(/^#AI_ERROR:\s*/i, "") || "AI error";
+                    if (!errorHint) errorHint = String(displayValue || "");
+                }
+                if (isFormula && String(displayValue == null ? "" : displayValue) === "") {
+                    displayValue = raw;
+                }
+
+                input.parentElement.classList.toggle("manual-formula", this.aiService.getMode() === AI_MODE.manual && isFormula);
+                input.parentElement.classList.toggle("has-formula", isFormula);
+                input.parentElement.classList.toggle("has-display-value", String(displayValue == null ? "" : displayValue) !== "");
+                input.parentElement.classList.toggle("has-attachment", !!attachment);
+                input.parentElement.classList.toggle("has-error", !!errorHint);
+                if (errorHint) {
+                    input.parentElement.setAttribute("data-error-hint", errorHint);
+                } else {
+                    input.parentElement.removeAttribute("data-error-hint");
+                }
+                this.grid.renderCellValue(input, displayValue, isEditing, isFormula, {
+                    literal: literalDisplay,
+                    attachment: attachment,
+                    error: !!errorHint,
+                    state: cellState
+                });
+                if (isFormula) {
+                    formulaDone++;
+                    this.updateCalcProgress(formulaDone, formulaCount);
+                }
+            } catch (e) {
+                input.parentElement.classList.remove("manual-formula");
+                input.parentElement.classList.remove("has-formula");
+                input.parentElement.classList.remove("has-display-value");
+                input.parentElement.classList.remove("has-attachment");
+                input.parentElement.classList.remove("has-error");
+                input.parentElement.removeAttribute("data-error-hint");
+            }
+        });
+
+        this.applyRightOverflowText();
+        if (this.activeInput && !this.hasPendingLocalEdit()) {
+            this.formulaInput.value = this.getRawCellValue(this.activeInput.id);
+        }
+        this.renderReportLiveValues(true);
+        this.finishCalcProgress(formulaCount);
+    }
+
     computeAll() {
         var options = arguments.length > 0 ? arguments[0] : {};
         if (this.isReportActive()) {
@@ -4154,6 +4486,7 @@ export class SpreadsheetApp {
                         var attachment = this.parseAttachmentSource(raw);
                         var isFormula = !!raw && (raw.charAt(0) === "=" || raw.charAt(0) === ">" || raw.charAt(0) === "#" || raw.charAt(0) === "'");
                         var storedDisplay = this.storage.getCellDisplayValue(this.activeSheetId, input.id);
+                        var cellState = this.storage.getCellState(this.activeSheetId, input.id);
                         var errorHint = this.storage.getCellError(this.activeSheetId, input.id);
                         var value = isFormula && Object.prototype.hasOwnProperty.call(computedValues, input.id)
                             ? computedValues[input.id]
@@ -4184,7 +4517,8 @@ export class SpreadsheetApp {
                         this.grid.renderCellValue(input, displayValue, isEditing, isFormula, {
                             literal: literalDisplay,
                             attachment: attachment,
-                            error: !!errorHint
+                            error: !!errorHint,
+                            state: cellState
                         });
                         if (isFormula) {
                             formulaDone++;

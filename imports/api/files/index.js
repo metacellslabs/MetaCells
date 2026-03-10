@@ -6,6 +6,9 @@ import { promisify } from "node:util";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { enqueueDurableJobAndWait, registerJobHandler } from "../jobs/index.js";
+import { getJobSettingsSync } from "../settings/index.js";
 
 const execFile = promisify(execFileCallback);
 const APP_ROOT = process.env.PWD || path.resolve(process.cwd(), "..", "..", "..", "..");
@@ -136,6 +139,20 @@ export async function extractFileContentWithConverter({ fileName, mimeType, base
   }
 }
 
+registerJobHandler("files.extract_content", {
+  concurrency: () => getJobSettingsSync().fileExtractConcurrency,
+  maxAttempts: () => getJobSettingsSync().fileExtractMaxAttempts,
+  retryDelayMs: () => getJobSettingsSync().fileExtractRetryDelayMs,
+  run: async (job) => {
+    const payload = job && job.payload ? job.payload : {};
+    return extractFileContentWithConverter({
+      fileName: payload.fileName,
+      mimeType: payload.mimeType,
+      base64Data: payload.base64Data,
+    });
+  },
+});
+
 if (Meteor.isServer) {
   Meteor.methods({
     async "files.extractContent"(fileName, mimeType, base64Data) {
@@ -143,11 +160,25 @@ if (Meteor.isServer) {
       check(mimeType, String);
       check(base64Data, String);
 
-      const content = await extractFileContentWithConverter({
-        fileName,
-        mimeType,
-        base64Data,
-      });
+      const dedupeHash = createHash("sha256")
+        .update(`${String(fileName || "")}\n${String(mimeType || "")}\n${String(base64Data || "")}`)
+        .digest("hex");
+      const content = await enqueueDurableJobAndWait(
+        {
+          type: "files.extract_content",
+          payload: {
+            fileName,
+            mimeType,
+            base64Data,
+          },
+          dedupeKey: `files.extract_content:${dedupeHash}`,
+          maxAttempts: 3,
+          retryDelayMs: 1_000,
+        },
+        {
+          timeoutMs: 180_000,
+        },
+      );
 
       return {
         name: fileName,

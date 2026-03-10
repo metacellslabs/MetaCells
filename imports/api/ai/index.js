@@ -6,7 +6,8 @@ import { StorageService } from "../../ui/metacell/runtime/storage-service.js";
 import { GRID_COLS, GRID_ROWS } from "../../ui/metacell/runtime/constants.js";
 import { buildListSystemPrompt, buildTableSystemPrompt } from "../../ui/metacell/runtime/ai-prompts.js";
 import { WorkbookStorageAdapter, createEmptyWorkbook } from "../../ui/metacell/runtime/workbook-storage-adapter.js";
-import { getActiveAIProvider, getLMStudioBaseUrl } from "../settings/index.js";
+import { getActiveAIProvider, getJobSettingsSync, getLMStudioBaseUrl } from "../settings/index.js";
+import { deferJobExecution, enqueueDurableJobAndWait, registerJobHandler } from "../jobs/index.js";
 
 const URL_MARKDOWN_MAX_CHARS = 50000;
 const AI_QUEUE_CONCURRENCY = 3;
@@ -21,6 +22,7 @@ const editLockSeqMatch = Match.Maybe(Number);
 let cachedModel = null;
 let aiQueueActiveCount = 0;
 let loadSheetDocumentStorageHook = null;
+let loadChannelPayloadsHook = null;
 const aiQueuedTasks = [];
 const aiPendingTaskByKey = new Map();
 const aiLockedSources = new Set();
@@ -28,6 +30,50 @@ const aiLockStateByKey = new Map();
 
 function log(event, payload) {
   console.log(`[ai] ${event}`, payload);
+}
+
+function providerSupportsImageInput(provider, model) {
+  const providerType = String(provider && provider.type ? provider.type : "").trim().toLowerCase();
+  const modelName = String(model || provider?.model || "").trim().toLowerCase();
+  if (!providerType || !modelName) return false;
+  if (providerType === "deepseek") {
+    return modelName.includes("vl") || modelName.includes("vision");
+  }
+  if (providerType === "openai") {
+    return modelName.includes("gpt-4o") || modelName.includes("gpt-4.1");
+  }
+  if (providerType === "lm_studio") {
+    return modelName.includes("vision") || modelName.includes("vl") || modelName.includes("llava");
+  }
+  return false;
+}
+
+function stripUnsupportedImageParts(messages) {
+  return Array.isArray(messages)
+    ? messages.map((message) => {
+        const source = message && typeof message === "object" ? message : {};
+        const content = source.content;
+        if (!Array.isArray(content)) {
+          return {
+            role: source.role,
+            content,
+          };
+        }
+        const text = content
+          .map((part) => {
+            if (typeof part === "string") return part;
+            if (!part || typeof part !== "object") return "";
+            if (part.type === "text") return String(part.text == null ? "" : part.text);
+            return "";
+          })
+          .join("")
+          .trim();
+        return {
+          role: source.role,
+          content: text,
+        };
+      })
+    : [];
 }
 
 function htmlToMarkdown(html) {
@@ -104,6 +150,13 @@ async function fetchModelFromServer() {
 
   if (provider.type === "deepseek") {
     const model = String(provider.model || "deepseek-chat");
+    cachedModel = { providerKey, model };
+    log("model.provider_default", { model, provider: provider.type });
+    return model;
+  }
+
+  if (provider.type === "openai") {
+    const model = String(provider.model || "gpt-4.1-mini");
     cachedModel = { providerKey, model };
     log("model.provider_default", { model, provider: provider.type });
     return model;
@@ -239,6 +292,9 @@ async function buildQueuedPayload(queueMeta) {
 
   const rawStorage = new WorkbookStorageAdapter(workbookData);
   const storageService = new StorageService(rawStorage);
+  const channelPayloads = typeof loadChannelPayloadsHook === "function"
+    ? (await loadChannelPayloadsHook()) || {}
+    : {};
   const aiService = new AIService(storageService, () => {}, {
     sheetDocumentId: queueMeta.sheetDocumentId,
     getActiveSheetId: () => String(queueMeta.activeSheetId || ""),
@@ -253,12 +309,14 @@ async function buildQueuedPayload(queueMeta) {
   const promptTemplate = String(queueMeta.promptTemplate || "");
 
   return aiService.withRequestsSuppressed(() => {
-    const prepared = formulaEngine.prepareAIPrompt(sourceSheetId, promptTemplate, {}, {});
-    const dependencies = formulaEngine.collectAIPromptDependencies(sourceSheetId, promptTemplate);
+    const runtimeOptions = { channelPayloads };
+    const prepared = formulaEngine.prepareAIPrompt(sourceSheetId, promptTemplate, {}, runtimeOptions);
+    const dependencies = formulaEngine.collectAIPromptDependencies(sourceSheetId, promptTemplate, runtimeOptions);
+    const buildUserContent = (text) => aiService.buildUserMessageContent(text, prepared.userContent);
     const enrich = (messages) =>
       aiService.enrichPromptWithFetchedUrls(prepared.userPrompt).then((finalPrompt) => {
         const nextMessages = messages.slice();
-        nextMessages[nextMessages.length - 1] = { role: "user", content: finalPrompt };
+        nextMessages[nextMessages.length - 1] = { role: "user", content: buildUserContent(finalPrompt) };
         return { messages: nextMessages, dependencies };
       });
 
@@ -267,7 +325,7 @@ async function buildQueuedPayload(queueMeta) {
       const messages = [];
       if (prepared.systemPrompt) messages.push({ role: "system", content: prepared.systemPrompt });
       messages.push({ role: "system", content: buildListInstruction(count) });
-      messages.push({ role: "user", content: prepared.userPrompt });
+      messages.push({ role: "user", content: buildUserContent(prepared.userPrompt) });
       return enrich(messages);
     }
 
@@ -277,13 +335,13 @@ async function buildQueuedPayload(queueMeta) {
       const messages = [];
       if (prepared.systemPrompt) messages.push({ role: "system", content: prepared.systemPrompt });
       messages.push({ role: "system", content: buildTableInstruction(colsLimit, rowsLimit) });
-      messages.push({ role: "user", content: prepared.userPrompt });
+      messages.push({ role: "user", content: buildUserContent(prepared.userPrompt) });
       return enrich(messages);
     }
 
     const messages = [];
     if (prepared.systemPrompt) messages.push({ role: "system", content: prepared.systemPrompt });
-    messages.push({ role: "user", content: prepared.userPrompt });
+    messages.push({ role: "user", content: buildUserContent(prepared.userPrompt) });
     return enrich(messages);
   });
 }
@@ -365,6 +423,16 @@ function enqueueTask(type, payload, queueMeta, runner) {
   });
   scheduleQueueDrain();
   return promise;
+}
+
+function normalizeQueueMeta(queueMeta) {
+  return queueMeta
+    ? {
+        ...queueMeta,
+        queueIdentity: createQueueIdentity(queueMeta),
+        dependencies: normalizeTaskDependencies(queueMeta.dependencies),
+      }
+    : null;
 }
 
 async function drainQueue() {
@@ -452,11 +520,119 @@ async function drainQueue() {
   }
 }
 
+async function runAIChatJob(job) {
+  const task = {
+    key: String(job && job.dedupeKey ? job.dedupeKey : job && job._id ? job._id : "ai-job"),
+    payload: job && job.payload ? { ...job.payload } : { messages: [] },
+    queueMeta: normalizeQueueMeta(job && job.payload ? job.payload.queueMeta : null),
+  };
+
+  if (isTaskSourceLocked(task)) {
+    return deferJobExecution(500, "blocked by edit lock");
+  }
+
+  if (task.queueMeta) {
+    const rebuilt = await buildQueuedPayload(task.queueMeta);
+    if (rebuilt && Array.isArray(rebuilt.messages) && rebuilt.messages.length) {
+      task.payload = {
+        messages: rebuilt.messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+      };
+      task.queueMeta = {
+        ...task.queueMeta,
+        dependencies: rebuilt.dependencies,
+      };
+    }
+  }
+
+  const model = await fetchModelFromServer();
+  const provider = await getActiveAIProvider();
+  const effectiveMessages = providerSupportsImageInput(provider, model)
+    ? (task.payload.messages || [])
+    : stripUnsupportedImageParts(task.payload.messages || []);
+  log("method.ai.requestChat.start", {
+    model,
+    messages: effectiveMessages.map((message) => ({
+      role: message.role,
+      preview: String(
+        Array.isArray(message.content)
+          ? message.content.map((part) => (typeof part === "string" ? part : (part && part.text) || "")).join("")
+          : message.content,
+      ).slice(0, 200),
+    })),
+    dependencies: normalizeTaskDependencies(task.queueMeta && task.queueMeta.dependencies).length,
+  });
+
+  const requestBaseUrl = provider.type === "lm_studio" ? provider.baseUrl : String(provider.baseUrl || "");
+  const requestUrl = `${requestBaseUrl.replace(/\/+$/, "")}/chat/completions`;
+  const requestHeaders = { "Content-Type": "application/json" };
+  if ((provider.type === "deepseek" || provider.type === "openai") && provider.apiKey) {
+    requestHeaders.Authorization = `Bearer ${provider.apiKey}`;
+  }
+  const requestBody = JSON.stringify({
+    model,
+    messages: effectiveMessages,
+  });
+  log("method.ai.requestChat.fetch", {
+    provider: provider.type,
+    url: requestUrl,
+    body: requestBody,
+  });
+  const response = await fetch(requestUrl, {
+    method: "POST",
+    headers: requestHeaders,
+    body: requestBody,
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    log("method.ai.requestChat.error", { status: response.status, body: body.slice(0, 500) });
+    let details = body;
+    try {
+      const parsed = JSON.parse(body);
+      details = parsed && parsed.error && (parsed.error.message || parsed.error.code || parsed.error.type)
+        ? String(parsed.error.message || parsed.error.code || parsed.error.type)
+        : body;
+    } catch (e) {}
+    const message = String(details || "").trim();
+    throw new Error(message || `HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const message = data && data.choices && data.choices[0] && data.choices[0].message;
+  let content = message && message.content;
+  if (Array.isArray(content)) {
+    content = content
+      .map((part) => (typeof part === "string" ? part : (part && part.text) || ""))
+      .join("");
+  }
+
+  const finalContent = String(content || "");
+  log("method.ai.requestChat.success", {
+    preview: finalContent.slice(0, 500),
+    length: finalContent.length,
+  });
+  return finalContent;
+}
+
 export function registerAIQueueSheetRuntimeHooks(hooks) {
   const nextHooks = hooks || {};
-  loadSheetDocumentStorageHook =
-    typeof nextHooks.loadSheetDocumentStorage === "function" ? nextHooks.loadSheetDocumentStorage : null;
+  if (typeof nextHooks.loadSheetDocumentStorage === "function") {
+    loadSheetDocumentStorageHook = nextHooks.loadSheetDocumentStorage;
+  }
+  if (typeof nextHooks.loadChannelPayloads === "function") {
+    loadChannelPayloadsHook = nextHooks.loadChannelPayloads;
+  }
 }
+
+registerJobHandler("ai.request_chat", {
+  concurrency: () => getJobSettingsSync().aiChatConcurrency,
+  maxAttempts: () => getJobSettingsSync().aiChatMaxAttempts,
+  retryDelayMs: () => getJobSettingsSync().aiChatRetryDelayMs,
+  run: runAIChatJob,
+});
 
 export async function notifyQueuedSheetDependenciesChanged(sheetDocumentId, changes) {
   const normalizedSheetId = String(sheetDocumentId || "");
@@ -528,80 +704,21 @@ if (Meteor.isServer) {
           role: message.role,
           content: message.content,
         })),
+        queueMeta: queueMeta || null,
       };
-
-      return enqueueTask("chat", payload, queueMeta || null, async (task) => {
-        if (task.queueMeta) {
-          await refreshTaskFromSheetState(task, "before-run");
-        }
-
-        const effectiveMessages = task.payload.messages || [];
-        const model = await fetchModelFromServer();
-        log("method.ai.requestChat.start", {
-          model,
-          messages: effectiveMessages.map((message) => ({
-            role: message.role,
-            preview: String(
-              Array.isArray(message.content)
-                ? message.content.map((part) => (typeof part === "string" ? part : (part && part.text) || "")).join("")
-                : message.content,
-            ).slice(0, 200),
-          })),
-          dependencies: normalizeTaskDependencies(task.queueMeta && task.queueMeta.dependencies).length,
-        });
-
-        const provider = await getActiveAIProvider();
-        const requestBaseUrl = provider.type === "lm_studio" ? provider.baseUrl : String(provider.baseUrl || "");
-        const requestUrl = `${requestBaseUrl.replace(/\/+$/, "")}/chat/completions`;
-        const requestHeaders = { "Content-Type": "application/json" };
-        if (provider.type === "deepseek" && provider.apiKey) {
-          requestHeaders.Authorization = `Bearer ${provider.apiKey}`;
-        }
-        const requestBody = JSON.stringify({
-          model,
-          messages: effectiveMessages,
-        });
-        log("method.ai.requestChat.fetch", {
-          provider: provider.type,
-          url: requestUrl,
-          body: requestBody,
-        });
-        const response = await fetch(requestUrl, {
-          method: "POST",
-          headers: requestHeaders,
-          body: requestBody,
-        });
-
-        if (!response.ok) {
-          const body = await response.text();
-          log("method.ai.requestChat.error", { status: response.status, body: body.slice(0, 500) });
-          let details = body;
-          try {
-            const parsed = JSON.parse(body);
-            details = parsed && parsed.error && (parsed.error.message || parsed.error.code || parsed.error.type)
-              ? String(parsed.error.message || parsed.error.code || parsed.error.type)
-              : body;
-          } catch (e) {}
-          const message = String(details || "").trim();
-          throw new Error(message || `HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        const message = data && data.choices && data.choices[0] && data.choices[0].message;
-        let content = message && message.content;
-        if (Array.isArray(content)) {
-          content = content
-            .map((part) => (typeof part === "string" ? part : (part && part.text) || ""))
-            .join("");
-        }
-
-        const finalContent = String(content || "");
-        log("method.ai.requestChat.success", {
-          preview: finalContent.slice(0, 500),
-          length: finalContent.length,
-        });
-        return finalContent;
-      });
+      const normalizedMeta = normalizeQueueMeta(queueMeta || null);
+      return enqueueDurableJobAndWait(
+        {
+          type: "ai.request_chat",
+          payload,
+          dedupeKey: createTaskKey("chat", payload, normalizedMeta),
+          maxAttempts: AI_QUEUE_MAX_RETRIES,
+          retryDelayMs: AI_QUEUE_RETRY_DELAY_MS,
+        },
+        {
+          timeoutMs: 180_000,
+        },
+      );
     },
 
     async "ai.fetchUrlMarkdown"(url) {

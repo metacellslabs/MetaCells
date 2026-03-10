@@ -184,6 +184,81 @@ describe("metacells", function () {
       assert.ok(manifest.every((item) => /^[0-9a-f]{8}$/.test(String(item.discoveryHash || ""))));
     });
 
+    it("discovers file-based channel connectors automatically", async function () {
+      const { getRegisteredChannelConnectors, getRegisteredChannelConnectorManifest } = await import("../imports/api/channels/connectors/index.js");
+      const { HELP_SECTIONS } = await import("../imports/ui/help/helpContent.js");
+
+      const connectors = getRegisteredChannelConnectors();
+      const manifest = getRegisteredChannelConnectorManifest();
+      const helpSection = HELP_SECTIONS.find((section) => section && section.title === "Channels");
+
+      assert.ok(connectors.some((item) => item.id === "imap-email"));
+      assert.ok(manifest.some((item) => item.file === "IMAP.js"));
+      assert.ok(manifest.every((item) => /^[0-9a-f]{8}$/.test(String(item.discoveryHash || ""))));
+      assert.ok(helpSection);
+      assert.ok(helpSection.items.some((item) => String(item).includes("Email (IMAP + SMTP)")));
+      assert.ok(helpSection.items.some((item) => String(item).includes("/channel1:send:message")));
+    });
+
+    it("returns a readable error for invalid IMAP test settings", async function () {
+      const { testImapConnection } = await import("../imports/api/channels/server/handlers/imap.js");
+
+      await assert.rejects(
+        () => testImapConnection({
+          host: "",
+          username: "",
+          password: "",
+          mailbox: "INBOX",
+        }),
+        /IMAP host is required/,
+      );
+    });
+
+    it("collects and injects channel mentions into AI prompts", async function () {
+      const { FormulaEngine } = await import("../imports/ui/metacell/runtime/formula-engine.js");
+
+      const storageService = {
+        getCellValue() {
+          return "";
+        },
+        getCellState() {
+          return "resolved";
+        },
+        resolveNamedCell() {
+          return null;
+        },
+      };
+      const formulaEngine = new FormulaEngine(
+        storageService,
+        {},
+        () => [{ id: "sheet-1", name: "Sheet 1", type: "sheet" }],
+        ["A1"],
+      );
+
+      const dependencies = formulaEngine.collectAIPromptDependencies("sheet-1", "summarize /sf in one sentence");
+      assert.ok(dependencies.some((item) => item && item.kind === "channel" && item.label === "sf"));
+      assert.strictEqual(
+        formulaEngine.arePromptDependenciesResolved("sheet-1", "summarize /sf", { channelPayloads: {} }),
+        false,
+      );
+
+      const prepared = formulaEngine.prepareAIPrompt("sheet-1", "summarize /sf in one sentence", {}, {
+        channelPayloads: {
+          sf: {
+            label: "sf",
+            event: "message.new",
+            subject: "New task",
+            from: ["boss@example.com"],
+            text: "Please prepare the weekly summary.",
+          },
+        },
+      });
+
+      assert.match(prepared.userPrompt, /Event: message\.new/);
+      assert.match(prepared.userPrompt, /Subject: New task/);
+      assert.match(prepared.userPrompt, /Please prepare the weekly summary\./);
+    });
+
     it("builds default settings from discovered AI providers", async function () {
       const {
         DEFAULT_AI_PROVIDERS,
@@ -308,6 +383,108 @@ describe("metacells", function () {
       } finally {
         await Sheets.removeAsync({ _id: sheetId });
       }
+    });
+
+    it("persists dependency graph edges for cells, named refs, channels, and attachments", async function () {
+      const { FormulaEngine } = await import("../imports/ui/metacell/runtime/formula-engine.js");
+      const { WorkbookStorageAdapter } = await import("../imports/ui/metacell/runtime/workbook-storage-adapter.js");
+      const { StorageService } = await import("../imports/ui/metacell/runtime/storage-service.js");
+
+      const workbook = {
+        version: 1,
+        tabs: [{ id: "sheet-1", name: "Sheet 1", type: "sheet" }],
+        activeTabId: "sheet-1",
+        aiMode: "auto",
+        namedCells: {
+          file: { sheetId: "sheet-1", cellId: "A1" },
+        },
+        sheets: {
+          "sheet-1": {
+            cells: {
+              A1: {
+                source: "__ATTACHMENT__:{\"name\":\"policy.txt\",\"type\":\"text/plain\",\"content\":\"Policy body\"}",
+                sourceType: "raw",
+                value: "__ATTACHMENT__:{\"name\":\"policy.txt\",\"type\":\"text/plain\",\"content\":\"Policy body\"}",
+                state: "resolved",
+                error: "",
+                generatedBy: "",
+                version: 1,
+              },
+              B1: {
+                source: "'summarize @file for /sf'",
+                sourceType: "formula",
+                value: "",
+                state: "stale",
+                error: "",
+                generatedBy: "",
+                version: 1,
+              },
+            },
+            columnWidths: {},
+            rowHeights: {},
+            reportContent: "",
+          },
+        },
+        caches: {},
+        globals: {},
+      };
+
+      const adapter = new WorkbookStorageAdapter(workbook);
+      const storageService = new StorageService(adapter);
+      const formulaEngine = new FormulaEngine(
+        storageService,
+        {
+          ask() {
+            return "summary";
+          },
+        },
+        () => [{ id: "sheet-1", name: "Sheet 1", type: "sheet" }],
+        ["A1", "B1"],
+      );
+      const dependencyCollector = {
+        cells: [],
+        namedRefs: [],
+        channelLabels: [],
+        attachments: [],
+        addCell(sheetId, cellId) {
+          if (!this.cells.some((item) => item.sheetId === sheetId && item.cellId === cellId)) {
+            this.cells.push({ sheetId, cellId });
+          }
+        },
+        addNamedRef(name) {
+          if (this.namedRefs.indexOf(name) === -1) this.namedRefs.push(name);
+        },
+        addChannel(label) {
+          if (this.channelLabels.indexOf(label) === -1) this.channelLabels.push(label);
+        },
+        addAttachment(sheetId, cellId) {
+          if (!this.attachments.some((item) => item.sheetId === sheetId && item.cellId === cellId)) {
+            this.attachments.push({ sheetId, cellId });
+          }
+        },
+      };
+
+      formulaEngine.evaluateCell("sheet-1", "B1", {}, {
+        channelPayloads: {
+          sf: {
+            label: "sf",
+            event: "message.new",
+            subject: "Policy review",
+            text: "Please summarize the latest policy",
+          },
+        },
+        dependencyCollector,
+      });
+      storageService.setCellDependencies("sheet-1", "B1", dependencyCollector);
+
+      const graph = storageService.getDependencyGraph().byCell || {};
+      const entry = graph["sheet-1:B1"];
+
+      assert.ok(entry);
+      assert.deepStrictEqual(entry.namedRefs, ["file"]);
+      assert.deepStrictEqual(entry.channelLabels, ["sf"]);
+      assert.ok(entry.cells.some((item) => item.sheetId === "sheet-1" && item.cellId === "A1"));
+      assert.ok(entry.attachments.some((item) => item.sheetId === "sheet-1" && item.cellId === "A1"));
     });
 
     it("persists #REF! and hint for missing sheet dependencies", async function () {
@@ -467,6 +644,322 @@ describe("metacells", function () {
         const decodedWorkbook = decodeWorkbookDocument(saved.workbook || {});
         assert.strictEqual(decodedWorkbook.sheets["sheet-1"].cells.C1.value, "70");
         assert.strictEqual(decodedWorkbook.sheets["sheet-2"].cells.A1.value, "70");
+      } finally {
+        await Sheets.removeAsync({ _id: sheetId });
+      }
+    });
+
+    it("walks affected downstream cells from the persisted dependency graph", async function () {
+      const { collectAffectedCellKeysFromSignals } = await import("../imports/api/sheets/server/compute.js");
+
+      const workbook = {
+        version: 1,
+        tabs: [
+          { id: "sheet-1", name: "Sheet 1", type: "sheet" },
+          { id: "sheet-2", name: "Sheet 2", type: "sheet" },
+        ],
+        activeTabId: "sheet-1",
+        aiMode: "auto",
+        namedCells: {},
+        sheets: {
+          "sheet-1": { cells: {}, columnWidths: {}, rowHeights: {}, reportContent: "" },
+          "sheet-2": { cells: {}, columnWidths: {}, rowHeights: {}, reportContent: "" },
+        },
+        dependencyGraph: {
+          byCell: {
+            "sheet-1:B1": {
+              cells: [{ sheetId: "sheet-1", cellId: "A1" }],
+              namedRefs: [],
+              channelLabels: [],
+              attachments: [],
+            },
+            "sheet-2:C1": {
+              cells: [{ sheetId: "sheet-1", cellId: "B1" }],
+              namedRefs: [],
+              channelLabels: [],
+              attachments: [],
+            },
+          },
+        },
+        caches: {},
+        globals: {},
+      };
+
+      const affected = collectAffectedCellKeysFromSignals(workbook, [
+        { kind: "cell", sheetId: "sheet-1", cellId: "A1" },
+      ]);
+
+      assert.ok(affected);
+      assert.strictEqual(affected["sheet-1:A1"], true);
+      assert.strictEqual(affected["sheet-1:B1"], true);
+      assert.strictEqual(affected["sheet-2:C1"], true);
+    });
+
+    it("marks only downstream dependent formulas stale during incremental invalidation", async function () {
+      const { invalidateWorkbookDependencies } = await import("../imports/api/sheets/server/compute.js");
+      const { decodeWorkbookDocument } = await import("../imports/api/sheets/workbook-codec.js");
+
+      const workbook = {
+        version: 1,
+        tabs: [{ id: "sheet-1", name: "Sheet 1", type: "sheet" }],
+        activeTabId: "sheet-1",
+        aiMode: "auto",
+        namedCells: {},
+        sheets: {
+          "sheet-1": {
+            cells: {
+              A1: { source: "20", sourceType: "raw", value: "20", state: "resolved", generatedBy: "", version: 2 },
+              B1: { source: "=A1", sourceType: "formula", value: "10", state: "resolved", error: "", generatedBy: "", version: 1 },
+              C1: { source: "=B1", sourceType: "formula", value: "10", state: "resolved", error: "", generatedBy: "", version: 1 },
+              D1: { source: "=99", sourceType: "formula", value: "99", state: "resolved", error: "", generatedBy: "", version: 1 },
+            },
+            columnWidths: {},
+            rowHeights: {},
+            reportContent: "",
+          },
+        },
+        dependencyGraph: {
+          byCell: {
+            "sheet-1:B1": {
+              cells: [{ sheetId: "sheet-1", cellId: "A1" }],
+              namedRefs: [],
+              channelLabels: [],
+              attachments: [],
+            },
+            "sheet-1:C1": {
+              cells: [{ sheetId: "sheet-1", cellId: "B1" }],
+              namedRefs: [],
+              channelLabels: [],
+              attachments: [],
+            },
+          },
+        },
+        caches: {},
+        globals: {},
+      };
+
+      const invalidated = decodeWorkbookDocument(invalidateWorkbookDependencies(workbook, [
+        { kind: "cell", sheetId: "sheet-1", cellId: "A1" },
+      ]));
+
+      assert.strictEqual(invalidated.sheets["sheet-1"].cells.A1.state, "resolved");
+      assert.strictEqual(invalidated.sheets["sheet-1"].cells.A1.value, "20");
+      assert.strictEqual(invalidated.sheets["sheet-1"].cells.B1.state, "stale");
+      assert.strictEqual(invalidated.sheets["sheet-1"].cells.C1.state, "stale");
+      assert.strictEqual(invalidated.sheets["sheet-1"].cells.D1.state, "resolved");
+    });
+
+    it("detects channel mentions inside workbook formulas", async function () {
+      const { workbookMentionsChannel } = await import("../imports/api/sheets/index.js");
+
+      const workbook = {
+        version: 1,
+        tabs: [{ id: "sheet-1", name: "Sheet 1", type: "sheet" }],
+        activeTabId: "sheet-1",
+        aiMode: "auto",
+        namedCells: {},
+        sheets: {
+          "sheet-1": {
+            cells: {
+              A1: { source: ">summarize /sf in one sentence", sourceType: "formula", value: "", state: "stale", generatedBy: "", version: 1 },
+              A2: { source: "plain text", sourceType: "raw", value: "plain text", state: "resolved", generatedBy: "", version: 1 },
+            },
+            columnWidths: {},
+            rowHeights: {},
+            reportContent: "",
+          },
+        },
+        caches: {},
+        globals: {},
+      };
+
+      assert.strictEqual(workbookMentionsChannel(workbook, "sf"), true);
+      assert.strictEqual(workbookMentionsChannel(workbook, "other"), false);
+    });
+
+    it("runs durable jobs through the Mongo-backed worker", async function () {
+      const { Jobs, registerJobHandler, enqueueDurableJobAndWait } = await import("../imports/api/jobs/index.js");
+      registerJobHandler("test.echo", {
+        concurrency: 1,
+        maxAttempts: 1,
+        retryDelayMs: 250,
+        run: async (job) => String(job && job.payload && job.payload.value ? job.payload.value : ""),
+      });
+
+      try {
+        const result = await enqueueDurableJobAndWait(
+          {
+            type: "test.echo",
+            payload: { value: "hello jobs" },
+            dedupeKey: "test.echo:hello-jobs",
+          },
+          { timeoutMs: 10_000 },
+        );
+
+        assert.strictEqual(result, "hello jobs");
+        const persisted = await Jobs.findOneAsync({
+          type: "test.echo",
+          dedupeKey: "test.echo:hello-jobs",
+        });
+        assert.ok(persisted);
+        assert.strictEqual(persisted.status, "completed");
+      } finally {
+        await Jobs.removeAsync({ type: "test.echo" });
+      }
+    });
+
+    it("uses persisted workbook cache/runtime state when client snapshot lags", async function () {
+      const { Sheets } = await import("../imports/api/sheets/index.js");
+      const sheetId = await Meteor.server.method_handlers["sheets.create"].apply({}, ["Test Persisted Cache Merge"]);
+
+      try {
+        const persistedWorkbook = {
+          version: 1,
+          tabs: [{ id: "sheet-1", name: "Sheet 1", type: "sheet" }],
+          activeTabId: "sheet-1",
+          aiMode: "auto",
+          namedCells: {},
+          sheets: {
+            "sheet-1": {
+              cells: {
+                A1: {
+                  source: "'3+4",
+                  sourceType: "formula",
+                  value: "7",
+                  state: "resolved",
+                  error: "",
+                  generatedBy: "",
+                  version: 1,
+                },
+              },
+              columnWidths: {},
+              rowHeights: {},
+              reportContent: "",
+            },
+          },
+          dependencyGraph: { byCell: {} },
+          caches: {
+            "AI_CACHE:\n---\n3+4": "7",
+          },
+          globals: {},
+        };
+
+        await Sheets.updateAsync(
+          { _id: sheetId },
+          {
+            $set: {
+              workbook: persistedWorkbook,
+              updatedAt: new Date(),
+            },
+            $unset: {
+              storage: "",
+            },
+          },
+        );
+
+        const laggingClientSnapshot = {
+          ...persistedWorkbook,
+          sheets: {
+            "sheet-1": {
+              ...persistedWorkbook.sheets["sheet-1"],
+              cells: {
+                A1: {
+                  ...persistedWorkbook.sheets["sheet-1"].cells.A1,
+                  value: "",
+                  state: "stale",
+                },
+              },
+            },
+          },
+          caches: {},
+        };
+
+        const result = await Meteor.server.method_handlers["sheets.computeGrid"].apply({}, [
+          sheetId,
+          "sheet-1",
+          { workbookSnapshot: laggingClientSnapshot },
+        ]);
+
+        assert.strictEqual(result.values.A1, "7");
+        assert.strictEqual(result.workbook.sheets["sheet-1"].cells.A1.state, "resolved");
+        assert.strictEqual(result.workbook.caches["AI_CACHE:\n---\n3+4"], "7");
+      } finally {
+        await Sheets.removeAsync({ _id: sheetId });
+      }
+    });
+
+    it("preserves persisted AI result when a lagging client workbook is saved", async function () {
+      const { Sheets } = await import("../imports/api/sheets/index.js");
+      const { decodeWorkbookDocument } = await import("../imports/api/sheets/workbook-codec.js");
+      const sheetId = await Meteor.server.method_handlers["sheets.create"].apply({}, ["Test Save Merge"]);
+
+      try {
+        const persistedWorkbook = {
+          version: 1,
+          tabs: [{ id: "sheet-1", name: "Sheet 1", type: "sheet" }],
+          activeTabId: "sheet-1",
+          aiMode: "auto",
+          namedCells: {},
+          sheets: {
+            "sheet-1": {
+              cells: {
+                A1: {
+                  source: "'4+4",
+                  sourceType: "formula",
+                  value: "8",
+                  state: "resolved",
+                  error: "",
+                  generatedBy: "",
+                  version: 1,
+                },
+              },
+              columnWidths: {},
+              rowHeights: {},
+              reportContent: "",
+            },
+          },
+          dependencyGraph: { byCell: { "sheet-1:A1": { cells: [], namedRefs: [], channelLabels: [], attachments: [] } } },
+          caches: {
+            "AI_CACHE:\n---\n4+4": "8",
+          },
+          globals: {},
+        };
+
+        await Sheets.updateAsync(
+          { _id: sheetId },
+          {
+            $set: {
+              workbook: persistedWorkbook,
+              updatedAt: new Date(),
+            },
+            $unset: { storage: "" },
+          },
+        );
+
+        const laggingClientWorkbook = {
+          ...persistedWorkbook,
+          sheets: {
+            "sheet-1": {
+              ...persistedWorkbook.sheets["sheet-1"],
+              cells: {
+                A1: {
+                  ...persistedWorkbook.sheets["sheet-1"].cells.A1,
+                  value: "",
+                  state: "stale",
+                },
+              },
+            },
+          },
+          caches: {},
+        };
+
+        await Meteor.server.method_handlers["sheets.saveWorkbook"].apply({}, [sheetId, laggingClientWorkbook]);
+
+        const saved = await Sheets.findOneAsync(sheetId);
+        const decoded = decodeWorkbookDocument(saved.workbook || {});
+        assert.strictEqual(decoded.sheets["sheet-1"].cells.A1.value, "8");
+        assert.strictEqual(decoded.sheets["sheet-1"].cells.A1.state, "resolved");
+        assert.strictEqual(decoded.caches["AI_CACHE:\n---\n4+4"], "8");
       } finally {
         await Sheets.removeAsync({ _id: sheetId });
       }

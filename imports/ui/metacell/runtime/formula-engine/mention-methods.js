@@ -6,7 +6,10 @@ getMentionValue(sheetId, cellId, stack, options) {
         if (!raw) return "";
         var attachment = typeof this.parseAttachmentSource === "function" ? this.parseAttachmentSource(raw) : null;
         if (attachment) {
-            return String(attachment.content == null ? "" : attachment.content);
+            if (typeof this.recordDependencyAttachment === "function") {
+                this.recordDependencyAttachment(options, sheetId, targetCellId);
+            }
+            return this.resolveAttachmentContentOrThrow(attachment);
         }
 
         if (this.isListShortcutRaw(raw)) {
@@ -41,6 +44,9 @@ getNamedRefValue(ref, stack, options, rawMode) {
 getNamedOrSpecialValue(currentSheetId, name, stack, options, rawMode) {
         var key = String(name || "").trim();
         if (!key) return "";
+        if (typeof this.recordDependencyNamedRef === "function") {
+            this.recordDependencyNamedRef(options, key);
+        }
 
         var ref = this.storageService.resolveNamedCell(key);
         if (ref && ref.sheetId) {

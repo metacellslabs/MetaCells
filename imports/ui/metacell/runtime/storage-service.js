@@ -98,6 +98,43 @@ export class StorageService {
         }
     }
 
+    setCellRuntimeState(sheetId, cellId, updates) {
+        if (typeof this.storage.setCellRuntimeState === "function") {
+            this.storage.setCellRuntimeState(sheetId, cellId, updates);
+        }
+    }
+
+    getCellDependencies(sheetId, cellId) {
+        if (typeof this.storage.getCellDependencies === "function") {
+            return this.storage.getCellDependencies(sheetId, cellId);
+        }
+        return {
+            cells: [],
+            namedRefs: [],
+            channelLabels: [],
+            attachments: [],
+        };
+    }
+
+    setCellDependencies(sheetId, cellId, dependencies) {
+        if (typeof this.storage.setCellDependencies === "function") {
+            this.storage.setCellDependencies(sheetId, cellId, dependencies);
+        }
+    }
+
+    clearCellDependencies(sheetId, cellId) {
+        if (typeof this.storage.clearCellDependencies === "function") {
+            this.storage.clearCellDependencies(sheetId, cellId);
+        }
+    }
+
+    getDependencyGraph() {
+        if (typeof this.storage.getDependencyGraph === "function") {
+            return this.storage.getDependencyGraph();
+        }
+        return { byCell: {} };
+    }
+
     getGeneratedCellSource(sheetId, cellId) {
         return this.storage.getGeneratedCellSource(sheetId, cellId) || "";
     }

@@ -1,7 +1,7 @@
 import { Mongo } from "meteor/mongo";
 import { Meteor } from "meteor/meteor";
 import { check, Match } from "meteor/check";
-import { computeSheetSnapshot } from "./server/compute";
+import { computeSheetSnapshot, invalidateWorkbookDependencies } from "./server/compute";
 import { decodeStorageMap } from "./storage-codec";
 import {
   buildWorkbookFromFlatStorage,
@@ -14,6 +14,8 @@ import {
   notifyQueuedSheetDependenciesChanged,
   registerAIQueueSheetRuntimeHooks,
 } from "../ai/index.js";
+import { extractChannelMentionLabels, normalizeChannelLabel } from "../channels/mentioning.js";
+import { getActiveChannelPayloadMap } from "../channels/runtime-state.js";
 
 export const Sheets = new Mongo.Collection("sheets");
 
@@ -108,6 +110,7 @@ function collectChangedDependencySignals(previousWorkbook, nextWorkbook) {
   const after = flattenWorkbook(nextWorkbook);
   const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
   const changes = [];
+  const namedRefChanges = {};
 
   keys.forEach((key) => {
     const prevValue = Object.prototype.hasOwnProperty.call(before, key) ? before[key] : undefined;
@@ -125,11 +128,168 @@ function collectChangedDependencySignals(previousWorkbook, nextWorkbook) {
     }
 
     if (String(key) === "NAMED_CELLS") {
-      changes.push({ kind: "named-cells" });
+      const previousNamedCells = previousWorkbook && previousWorkbook.namedCells && typeof previousWorkbook.namedCells === "object"
+        ? previousWorkbook.namedCells
+        : {};
+      const nextNamedCells = nextWorkbook && nextWorkbook.namedCells && typeof nextWorkbook.namedCells === "object"
+        ? nextWorkbook.namedCells
+        : {};
+      const allNames = new Set([...Object.keys(previousNamedCells), ...Object.keys(nextNamedCells)]);
+      allNames.forEach((name) => {
+        if (JSON.stringify(previousNamedCells[name] || null) === JSON.stringify(nextNamedCells[name] || null)) return;
+        namedRefChanges[String(name)] = true;
+      });
     }
   });
 
+  Object.keys(namedRefChanges).forEach((name) => {
+    changes.push({ kind: "named-ref", name });
+  });
+
   return changes;
+}
+
+function mergeWorkbookForCompute(persistedWorkbookValue, clientWorkbookValue) {
+  const persistedWorkbook = decodeWorkbookDocument(persistedWorkbookValue || {});
+  const clientWorkbook = decodeWorkbookDocument(clientWorkbookValue || {});
+  const mergedWorkbook = decodeWorkbookDocument(clientWorkbookValue || persistedWorkbookValue || {});
+
+  mergedWorkbook.caches = {
+    ...(persistedWorkbook.caches || {}),
+    ...(clientWorkbook.caches || {}),
+  };
+  mergedWorkbook.globals = {
+    ...(persistedWorkbook.globals || {}),
+    ...(clientWorkbook.globals || {}),
+  };
+
+  const persistedDependencyGraph = persistedWorkbook.dependencyGraph && typeof persistedWorkbook.dependencyGraph === "object"
+    ? persistedWorkbook.dependencyGraph
+    : { byCell: {} };
+  const clientDependencyGraph = clientWorkbook.dependencyGraph && typeof clientWorkbook.dependencyGraph === "object"
+    ? clientWorkbook.dependencyGraph
+    : { byCell: {} };
+  const persistedByCell = persistedDependencyGraph.byCell && typeof persistedDependencyGraph.byCell === "object"
+    ? persistedDependencyGraph.byCell
+    : {};
+  const clientByCell = clientDependencyGraph.byCell && typeof clientDependencyGraph.byCell === "object"
+    ? clientDependencyGraph.byCell
+    : {};
+  mergedWorkbook.dependencyGraph = {
+    byCell: {
+      ...persistedByCell,
+      ...clientByCell,
+    },
+  };
+
+  const sheetIds = new Set([
+    ...Object.keys(persistedWorkbook.sheets || {}),
+    ...Object.keys(clientWorkbook.sheets || {}),
+  ]);
+
+  sheetIds.forEach((sheetId) => {
+    const persistedSheet = persistedWorkbook.sheets && persistedWorkbook.sheets[sheetId];
+    const clientSheet = clientWorkbook.sheets && clientWorkbook.sheets[sheetId];
+    const mergedSheet = mergedWorkbook.sheets && mergedWorkbook.sheets[sheetId];
+    if (!mergedSheet || typeof mergedSheet !== "object") return;
+
+    const persistedCells = persistedSheet && typeof persistedSheet.cells === "object" ? persistedSheet.cells : {};
+    const clientCells = clientSheet && typeof clientSheet.cells === "object" ? clientSheet.cells : {};
+    const mergedCells = mergedSheet && typeof mergedSheet.cells === "object" ? mergedSheet.cells : {};
+    const cellIds = new Set([
+      ...Object.keys(persistedCells),
+      ...Object.keys(clientCells),
+    ]);
+
+    cellIds.forEach((cellId) => {
+      const persistedCell = persistedCells[cellId] && typeof persistedCells[cellId] === "object" ? persistedCells[cellId] : null;
+      const clientCell = clientCells[cellId] && typeof clientCells[cellId] === "object" ? clientCells[cellId] : null;
+      const mergedCell = mergedCells[cellId] && typeof mergedCells[cellId] === "object" ? mergedCells[cellId] : null;
+      if (!mergedCell) return;
+
+      const sourceMatches = persistedCell
+        && clientCell
+        && String(persistedCell.source || "") === String(clientCell.source || "");
+
+      if (!sourceMatches) return;
+
+      if (persistedCell) {
+        mergedCell.value = String(persistedCell.value == null ? "" : persistedCell.value);
+        mergedCell.state = String(persistedCell.state || mergedCell.state || "");
+        mergedCell.error = String(persistedCell.error || "");
+      }
+    });
+  });
+
+  return mergedWorkbook;
+}
+
+export function workbookMentionsChannel(workbookValue, channelLabel) {
+  const workbook = decodeWorkbookDocument(workbookValue || {});
+  const target = normalizeChannelLabel(channelLabel);
+  if (!target) return false;
+
+  const sheets = workbook && workbook.sheets && typeof workbook.sheets === "object" ? workbook.sheets : {};
+  return Object.keys(sheets).some((sheetId) => {
+    const sheet = sheets[sheetId];
+    const cells = sheet && sheet.cells && typeof sheet.cells === "object" ? sheet.cells : {};
+    return Object.keys(cells).some((cellId) => {
+      const cell = cells[cellId];
+      const source = String(cell && cell.source || "");
+      if (!source) return false;
+      const labels = extractChannelMentionLabels(source);
+      return labels.indexOf(target) !== -1;
+    });
+  });
+}
+
+export async function recomputeSheetsMentioningChannel(channelLabel) {
+  const target = normalizeChannelLabel(channelLabel);
+  if (!target) {
+    return { matched: 0, recomputed: 0 };
+  }
+
+  const channelPayloads = await getActiveChannelPayloadMap();
+  const docs = await Sheets.find({}, { fields: { workbook: 1 } }).fetchAsync();
+  let matched = 0;
+  let recomputed = 0;
+
+  for (let i = 0; i < docs.length; i += 1) {
+    const doc = docs[i];
+    const workbook = decodeWorkbookDocument(doc && doc.workbook || {});
+    if (!workbookMentionsChannel(workbook, target)) continue;
+    matched += 1;
+
+    const tabs = Array.isArray(workbook.tabs) ? workbook.tabs : [];
+    const defaultActiveSheetId =
+      String(workbook.activeTabId || "")
+      || String((tabs.find((tab) => tab && tab.type === "sheet") || {}).id || "sheet-1");
+
+    await computeSheetSnapshot({
+      sheetDocumentId: doc._id,
+      workbookData: workbook,
+      activeSheetId: defaultActiveSheetId,
+      channelPayloads,
+      changedSignals: [{ kind: "channel", label: target }],
+      persistWorkbook: async (nextWorkbook) => {
+        await Sheets.updateAsync(
+          { _id: doc._id },
+          {
+            $set: {
+              workbook: encodeWorkbookForDocument(decodeWorkbookDocument(nextWorkbook)),
+              updatedAt: new Date(),
+            },
+            $unset: {
+              storage: "",
+            },
+          },
+        );
+      },
+    });
+    recomputed += 1;
+  }
+
+  return { matched, recomputed };
 }
 
 registerAIQueueSheetRuntimeHooks({
@@ -219,13 +379,17 @@ if (Meteor.isServer) {
 
       const sheetDocument = await normalizeSheetDocument(sheetId);
       const previousWorkbook = decodeWorkbookDocument((sheetDocument && sheetDocument.workbook) || {});
-      const nextWorkbook = decodeWorkbookDocument(workbook);
+      const nextWorkbook = mergeWorkbookForCompute(previousWorkbook, workbook);
+      const changes = collectChangedDependencySignals(previousWorkbook, nextWorkbook);
+      const invalidatedWorkbook = decodeWorkbookDocument(
+        invalidateWorkbookDependencies(nextWorkbook, changes),
+      );
 
       await Sheets.updateAsync(
         { _id: sheetId },
         {
           $set: {
-            workbook: encodeWorkbookForDocument(nextWorkbook),
+            workbook: encodeWorkbookForDocument(invalidatedWorkbook),
             updatedAt: new Date(),
           },
           $unset: {
@@ -234,7 +398,6 @@ if (Meteor.isServer) {
         },
       );
 
-      const changes = collectChangedDependencySignals(previousWorkbook, nextWorkbook);
       if (changes.length) {
         await notifyQueuedSheetDependenciesChanged(sheetId, changes);
       }
@@ -254,14 +417,17 @@ if (Meteor.isServer) {
       const persistedWorkbook = decodeWorkbookDocument(sheetDocument.workbook || {});
       const sourceWorkbook =
         options && options.workbookSnapshot && typeof options.workbookSnapshot === "object"
-          ? decodeWorkbookDocument(options.workbookSnapshot)
+          ? mergeWorkbookForCompute(persistedWorkbook, options.workbookSnapshot)
           : persistedWorkbook;
+      const channelPayloads = await getActiveChannelPayloadMap();
 
       const result = await computeSheetSnapshot({
         sheetDocumentId: sheetId,
         workbookData: sourceWorkbook,
         activeSheetId,
+        channelPayloads,
         forceRefreshAI: !!(options && options.forceRefreshAI),
+        changedSignals: collectChangedDependencySignals(persistedWorkbook, sourceWorkbook),
         persistWorkbook: async (nextWorkbook) => {
           const normalizedNextWorkbook = decodeWorkbookDocument(nextWorkbook);
           const changes = collectChangedDependencySignals(sourceWorkbook, normalizedNextWorkbook);

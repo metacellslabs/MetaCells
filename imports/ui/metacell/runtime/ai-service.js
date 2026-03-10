@@ -129,10 +129,11 @@ export class AIService {
                     prompt: prompt,
                     cacheKey: cacheKey,
                     systemPrompt: systemPrompt,
+                    userContent: opts.userContent,
                     queueMeta: this.buildQueueMeta(opts.queueMeta)
                 };
             } else {
-                this.requestAsk(prompt, cacheKey, forceRefresh, systemPrompt, this.buildQueueMeta(opts.queueMeta));
+                this.requestAsk(prompt, cacheKey, forceRefresh, systemPrompt, opts.userContent, this.buildQueueMeta(opts.queueMeta));
             }
         }
 
@@ -168,10 +169,11 @@ export class AIService {
                     cacheKey: cacheKey,
                     onResult: onResult,
                     systemPrompt: systemPrompt,
+                    userContent: opts.userContent,
                     queueMeta: this.buildQueueMeta(opts.queueMeta)
                 };
             } else {
-                this.requestList(prompt, total, cacheKey, forceRefresh, onResult, systemPrompt, this.buildQueueMeta(opts.queueMeta));
+                this.requestList(prompt, total, cacheKey, forceRefresh, onResult, systemPrompt, opts.userContent, this.buildQueueMeta(opts.queueMeta));
             }
         }
 
@@ -203,11 +205,44 @@ export class AIService {
         var messages = [];
         if (opts.systemPrompt) messages.push({ role: "system", content: String(opts.systemPrompt) });
         messages.push({ role: "system", content: tableInstruction });
-        messages.push({ role: "user", content: prompt });
+        messages.push({ role: "user", content: opts.userContent || prompt });
 
         return this.requestChat(messages, this.buildQueueMeta(opts.queueMeta)).then((content) => {
             return this.parseTableResponse(String(content || ""), cols, rows);
         });
+    }
+
+    buildUserMessageContent(prompt, userContent) {
+        if (!Array.isArray(userContent) || !userContent.length) {
+            return String(prompt == null ? "" : prompt);
+        }
+        var text = String(prompt == null ? "" : prompt);
+        var parts = [];
+        var replacedText = false;
+        for (var i = 0; i < userContent.length; i++) {
+            var part = userContent[i];
+            if (!part || typeof part !== "object") continue;
+            if (part.type === "text") {
+                parts.push({
+                    type: "text",
+                    text: replacedText ? String(part.text == null ? "" : part.text) : text
+                });
+                replacedText = true;
+                continue;
+            }
+            if (part.type === "image_url" && part.image_url && part.image_url.url) {
+                parts.push({
+                    type: "image_url",
+                    image_url: {
+                        url: String(part.image_url.url || "")
+                    }
+                });
+            }
+        }
+        if (!replacedText && text) {
+            parts.unshift({ type: "text", text: text });
+        }
+        return parts.length ? parts : text;
     }
 
     loadCache(cacheKey) {
@@ -241,9 +276,9 @@ export class AIService {
             if (!Object.prototype.hasOwnProperty.call(queued, cacheKey)) continue;
             var task = queued[cacheKey];
             if (task.kind === "list") {
-                this.requestList(task.prompt, task.count, task.cacheKey, false, task.onResult, task.systemPrompt, task.queueMeta);
+                this.requestList(task.prompt, task.count, task.cacheKey, false, task.onResult, task.systemPrompt, task.userContent, task.queueMeta);
             } else {
-                this.requestAsk(task.prompt, task.cacheKey, false, task.systemPrompt, task.queueMeta);
+                this.requestAsk(task.prompt, task.cacheKey, false, task.systemPrompt, task.userContent, task.queueMeta);
             }
         }
     }
@@ -261,7 +296,19 @@ export class AIService {
         return false;
     }
 
-    requestAsk(prompt, cacheKey, forceRefresh, systemPrompt, queueMeta) {
+    isSourceCellPending(queueMeta) {
+        var meta = queueMeta || {};
+        var sheetId = String(meta.activeSheetId || "");
+        var cellId = String(meta.sourceCellId || "").toUpperCase();
+        if (!sheetId || !cellId) return false;
+        var state = "";
+        if (this.storageService && typeof this.storageService.getCellState === "function") {
+            state = String(this.storageService.getCellState(sheetId, cellId) || "");
+        }
+        return state === "pending";
+    }
+
+    requestAsk(prompt, cacheKey, forceRefresh, systemPrompt, userContent, queueMeta) {
         if (this.pending[cacheKey] || SHARED_AI_PENDING[cacheKey]) {
             return;
         }
@@ -269,6 +316,9 @@ export class AIService {
         if (!forceRefresh) {
             var existing = this.loadCache(cacheKey);
             if (typeof existing !== "undefined") {
+                return;
+            }
+            if (this.isSourceCellPending(queueMeta)) {
                 return;
             }
         }
@@ -279,16 +329,19 @@ export class AIService {
         var done = () => {
             delete this.pending[cacheKey];
             delete SHARED_AI_PENDING[cacheKey];
-            this.onInvalidate();
+            this.onInvalidate(queueMeta || null);
         };
 
         var messages = [];
         if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-        messages.push({ role: "user", content: prompt });
+        messages.push({ role: "user", content: this.buildUserMessageContent(prompt, userContent) });
 
         this.enrichPromptWithFetchedUrls(prompt)
             .then((finalPrompt) => {
-                messages[messages.length - 1] = { role: "user", content: finalPrompt };
+                messages[messages.length - 1] = {
+                    role: "user",
+                    content: this.buildUserMessageContent(finalPrompt, userContent)
+                };
                 return this.requestChat(messages, queueMeta);
             })
             .then((content) => {
@@ -303,7 +356,7 @@ export class AIService {
             });
     }
 
-    requestList(prompt, count, cacheKey, forceRefresh, onResult, systemPrompt, queueMeta) {
+    requestList(prompt, count, cacheKey, forceRefresh, onResult, systemPrompt, userContent, queueMeta) {
         if (this.pending[cacheKey] || SHARED_AI_PENDING[cacheKey]) {
             return;
         }
@@ -311,6 +364,9 @@ export class AIService {
         if (!forceRefresh) {
             var existing = this.loadListCache(cacheKey);
             if (existing && existing.length) {
+                return;
+            }
+            if (this.isSourceCellPending(queueMeta)) {
                 return;
             }
         }
@@ -321,18 +377,21 @@ export class AIService {
         var done = () => {
             delete this.pending[cacheKey];
             delete SHARED_AI_PENDING[cacheKey];
-            this.onInvalidate();
+            this.onInvalidate(queueMeta || null);
         };
 
         var listSystemPrompt = buildListSystemPrompt(count, AI_LIST_DELIMITER);
         var messages = [];
         if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
         messages.push({ role: "system", content: listSystemPrompt });
-        messages.push({ role: "user", content: prompt });
+        messages.push({ role: "user", content: this.buildUserMessageContent(prompt, userContent) });
 
         this.enrichPromptWithFetchedUrls(prompt)
             .then((finalPrompt) => {
-                messages[messages.length - 1] = { role: "user", content: finalPrompt };
+                messages[messages.length - 1] = {
+                    role: "user",
+                    content: this.buildUserMessageContent(finalPrompt, userContent)
+                };
                 return this.requestChat(messages, queueMeta);
             })
             .then((content) => {

@@ -19,7 +19,7 @@ export class GridManager {
             for (var j = 0; j < this.cols; j++) {
                 var letter = String.fromCharCode("A".charCodeAt(0) + j - 1);
                 row.insertCell(-1).innerHTML = i && j
-                    ? "<div class='cell-output'></div><input id='" + letter + i + "'/><div class='cell-actions'><button type='button' class='cell-action' data-action='copy' title='Copy value'>⧉</button><button type='button' class='cell-action' data-action='fullscreen' title='Fullscreen'>⤢</button><button type='button' class='cell-action' data-action='run' title='Run formula'>▶</button></div><div class='fill-handle'></div>"
+                    ? "<div class='cell-output'></div><div class='cell-status' aria-hidden='true'></div><input id='" + letter + i + "'/><div class='cell-actions'><button type='button' class='cell-action' data-action='copy' title='Copy value'>⧉</button><button type='button' class='cell-action' data-action='fullscreen' title='Fullscreen'>⤢</button><button type='button' class='cell-action' data-action='run' title='Run formula'>▶</button></div><div class='fill-handle'></div>"
                     : i || letter;
             }
         }
@@ -202,15 +202,35 @@ export class GridManager {
         input.parentElement.dataset.computedValue = value == null ? "" : String(value);
 
         var output = input.parentElement.querySelector(".cell-output");
+        var statusNode = input.parentElement.querySelector(".cell-status");
+        var opts = options || {};
         if (output) {
             output.classList.toggle("formula-value", !!hasFormula);
-            output.classList.toggle("error-value", !!(options && options.error));
-            var opts = options || {};
+            output.classList.toggle("error-value", !!opts.error);
             if (opts.attachment) {
                 output.innerHTML = this.renderAttachmentValue(opts.attachment);
             } else {
                 output.innerHTML = opts.literal ? this.escapeHtml(value == null ? "" : value).replace(/\r\n?/g, "<br>") : this.renderMarkdown(value);
             }
+        }
+        if (statusNode) {
+            var nextState = hasFormula ? String(opts.state || "") : "";
+            var icon = "";
+            var title = "";
+            if (nextState === "pending" || nextState === "stale") {
+                icon = "◌";
+                title = nextState === "stale" ? "Waiting for recompute" : "Computing";
+            } else if (nextState === "resolved") {
+                icon = "✓";
+                title = "Computed";
+            } else if (nextState === "error") {
+                icon = "!";
+                title = "Error";
+            }
+            statusNode.textContent = icon;
+            statusNode.className = "cell-status" + (nextState ? " is-" + nextState : "");
+            if (title) statusNode.setAttribute("title", title);
+            else statusNode.removeAttribute("title");
         }
     }
 
@@ -223,8 +243,10 @@ export class GridManager {
         if (pending) {
             return "<div class='attachment-chip pending full'><button type='button' class='attachment-select'>Choose file</button></div>";
         }
-        return "<div class='attachment-chip" + (isImage ? " has-image-preview" : "") + "' data-full-name='" + (name || "Attached file") + "'>"
-            + "<button type='button' class='attachment-select'>" + (name || "Attached file") + "</button>"
+        return "<div class='attachment-chip" + (isImage ? " has-image-preview has-inline-image" : "") + "' data-full-name='" + (name || "Attached file") + "'>"
+            + "<button type='button' class='attachment-select'" + (isImage ? " style=\"background-image:url('" + this.escapeHtml(previewUrl) + "');\"" : "") + ">"
+            + "<span class='attachment-select-label'>" + (name || "Attached file") + "</span>"
+            + "</button>"
             + (isImage
                 ? "<div class='attachment-image-preview'><img src='" + this.escapeHtml(previewUrl) + "' alt='" + (name || "Attached image") + "' /></div>"
                 : "")
