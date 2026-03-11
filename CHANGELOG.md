@@ -3,6 +3,21 @@
 ## 2026-03-10
 
 ### Added
+
+- Canonical pure execution engine layer under:
+  - `imports/engine/constants.js`
+  - `imports/engine/storage-service.js`
+  - `imports/engine/workbook-storage-adapter.js`
+  - `imports/engine/formula-engine.js`
+  - `imports/engine/formula-engine/*`
+  - `imports/engine/formulas/*`
+- Separate durable job collections:
+  - `jobs`
+  - `job_logs`
+  - `dead_letter_jobs`
+- Dedicated `artifacts` collection for binary and text payloads.
+- Artifact serving route:
+  - `/artifacts/:artifactId`
 - Persisted workbook dependency graph storage under `workbook.dependencyGraph.byCell`.
 - Dependency edges for:
   - referenced cells
@@ -17,8 +32,65 @@
   - `web`
   - `worker`
 - Dedicated startup scripts for web and worker processes.
+- Persisted per-cell version metadata:
+  - `sourceVersion`
+  - `computedVersion`
+  - `dependencyVersion`
+  - `dependencySignature`
+- Persisted reverse dependency indexes:
+  - `dependentsByCell`
+  - `dependentsByNamedRef`
+  - `dependentsByChannel`
+  - `dependentsByAttachment`
+- Explicit dependency graph repair methods:
+  - `sheets.rebuildDependencyGraph`
+  - `sheets.rebuildAllDependencyGraphs`
+- Dedicated runtime modules:
+  - `history-runtime.js`
+  - `report-runtime.js`
+  - `selection-runtime.js`
+  - `attachment-runtime.js`
+  - `compute-runtime.js`
+  - `keyboard-runtime.js`
+  - `drag-clipboard-runtime.js`
+  - `tab-mention-runtime.js`
+  - `fullscreen-runtime.js`
+  - `grid-dom-runtime.js`
+  - `mention-runtime.js`
+  - `browser-runtime.js`
+  - `structure-runtime.js`
+  - `editor-controls-runtime.js`
+  - `sheet-shell-runtime.js`
+- Durable job worker states:
+  - `queued`
+  - `leased`
+  - `running`
+  - `retrying`
+  - `completed`
+  - `failed`
+  - `cancelled`
+- Job lease and heartbeat fields:
+  - `leasedAt`
+  - `heartbeatAt`
+  - `lockToken`
+  - `lockUntil`
+- Dead-letter snapshots for permanently failed jobs.
+- Job-log history entries for queue, claim, running, heartbeat, retry, completion, and failure transitions.
+- End-to-end cell update profiling with a shared `traceId` across client commit, client compute RPC, server compute stages, and client render.
 
 ### Changed
+
+- Server compute, server AI orchestration, workbook migration helpers, and tests now import shared execution primitives from `imports/engine` instead of `imports/ui/metacell/runtime`.
+- Runtime-side execution entry files now act as compatibility re-exports for the canonical engine layer where needed.
+- Runtime-side formula registry, formula modules, and formula-engine method modules now re-export `imports/engine` instead of carrying duplicate execution implementations.
+- Workbook file attachments now persist artifact references instead of inline blob/text payloads.
+- Channel-event attachments now persist binary/content artifact ids instead of embedded `data:` URLs and extracted text.
+- Server compute now hydrates attachment text from artifact refs only during evaluation and strips inline attachment content before workbook persistence and compute responses.
+- Channel-event attachment delivery now serves binary artifact content via attachment routes, with legacy embedded-URL fallback for older events.
+- Durable jobs now use lease ownership and periodic heartbeats instead of a bare running flag.
+- Worker startup now recovers interrupted leased/running jobs and periodically requeues expired leases.
+- AI and file extraction handlers now declare payload schema, idempotency strategy, timeout, lease timeout, and heartbeat policy.
+- Job settings now persist timeout, lease timeout, and heartbeat interval per job type.
 - Server compute now collects dependencies during actual formula evaluation instead of relying only on runtime-derived scans.
 - Channel-triggered recompute now passes explicit channel dependency signals into server compute.
 - Named-cell mapping changes now emit per-name dependency signals instead of only broad invalidation.
@@ -29,15 +101,63 @@
 - Channel polling now starts only in the worker runtime.
 - The default app startup now runs in `web` mode.
 - Local `start:worker` now attaches to the web dev Mongo instead of trying to start a second local Mongo from the same checkout.
+- Server compute can now reuse already-resolved cells when the stored dependency signature still matches current upstream state.
+- Workbook dependency graph updates now rebuild and persist reverse dependent indexes when cell dependencies change.
+- Server compute now reads persisted reverse dependent indexes directly and only rebuilds them for older workbook documents.
+- Workbook dependency graphs now carry authority metadata in `dependencyGraph.meta`.
+- Source changes now mark the graph non-authoritative until it is explicitly rebuilt.
+- Server compute now relies on persisted dependency indexes and explicit graph repair instead of live fallback scans of workbook formulas during evaluation.
+- Spreadsheet runtime history orchestration and report-mode orchestration have been extracted out of the monolithic controller into focused runtime modules.
+- Spreadsheet runtime selection/navigation, attachment UI, compute/render orchestration, and keyboard/context orchestration have been extracted behind dedicated runtime modules, leaving `index.js` as the coordinator.
+- Spreadsheet runtime fill/clipboard flows, tab-and-mention navigation, fullscreen/report publishing helpers, and grid DOM coordination have also been extracted behind dedicated runtime modules, further shrinking the controller surface in `index.js`.
+- Spreadsheet runtime mention autocomplete/editor-proxy handling and browser-global report/fullscreen helpers have also been extracted behind dedicated runtime modules.
+- Spreadsheet runtime sort orchestration, row/column structure mutations, formula-bar controls, named-cell controls, AI/display mode controls, and report-shell setup have also been extracted behind dedicated runtime modules.
+- Spreadsheet runtime tab-shell rendering, tab drag/reorder handling, and sheet switching have also been extracted behind a dedicated runtime module.
+- Spreadsheet runtime report mention replacement, report tab/preamble decoration, linked report controls, and leftover uncomputed-monitor helpers have also been extracted behind dedicated runtime modules.
+- Plain value edits now use a split recompute path:
+  - pure sync downstream formulas are recomputed locally and rendered immediately
+  - async or non-local-safe descendants still continue through server compute in the background
+- Local dependent discovery for the sync fast path now falls back to live formula scans when client-side dependency graph indexes are stale or incomplete.
 
 ### Verification
+
 - `node --check` passed for:
+  - [imports/engine/formula-engine.js](/Users/zentelechia/playground/thinker/imports/engine/formula-engine.js)
+  - [imports/engine/storage-service.js](/Users/zentelechia/playground/thinker/imports/engine/storage-service.js)
+  - [imports/engine/workbook-storage-adapter.js](/Users/zentelechia/playground/thinker/imports/engine/workbook-storage-adapter.js)
+  - [imports/engine/formula-engine/ai-methods.js](/Users/zentelechia/playground/thinker/imports/engine/formula-engine/ai-methods.js)
   - [imports/api/sheets/server/compute.js](/Users/zentelechia/playground/thinker/imports/api/sheets/server/compute.js)
   - [imports/api/sheets/index.js](/Users/zentelechia/playground/thinker/imports/api/sheets/index.js)
+  - [imports/api/jobs/index.js](/Users/zentelechia/playground/thinker/imports/api/jobs/index.js)
+  - [imports/api/settings/index.js](/Users/zentelechia/playground/thinker/imports/api/settings/index.js)
+  - [imports/api/ai/index.js](/Users/zentelechia/playground/thinker/imports/api/ai/index.js)
+  - [imports/api/files/index.js](/Users/zentelechia/playground/thinker/imports/api/files/index.js)
   - [imports/api/sheets/workbook-codec.js](/Users/zentelechia/playground/thinker/imports/api/sheets/workbook-codec.js)
   - [imports/ui/metacell/runtime/formula-engine.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/formula-engine.js)
   - [imports/ui/metacell/runtime/formula-engine/ai-methods.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/formula-engine/ai-methods.js)
   - [imports/ui/metacell/runtime/formula-engine/mention-methods.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/formula-engine/mention-methods.js)
   - [imports/ui/metacell/runtime/workbook-storage-adapter.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/workbook-storage-adapter.js)
-- `meteor test --once --port 3183 --driver-package meteortesting:mocha` is still blocked by the existing Rspack client panic:
-  - `scope not loaded, run load first`
+  - [imports/ui/metacell/runtime/index.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/index.js)
+  - [imports/ui/metacell/runtime/drag-clipboard-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/drag-clipboard-runtime.js)
+  - [imports/ui/metacell/runtime/tab-mention-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/tab-mention-runtime.js)
+  - [imports/ui/metacell/runtime/fullscreen-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/fullscreen-runtime.js)
+  - [imports/ui/metacell/runtime/grid-dom-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/grid-dom-runtime.js)
+  - [imports/ui/metacell/runtime/mention-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/mention-runtime.js)
+  - [imports/ui/metacell/runtime/browser-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/browser-runtime.js)
+  - [imports/ui/metacell/runtime/structure-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/structure-runtime.js)
+  - [imports/ui/metacell/runtime/editor-controls-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/editor-controls-runtime.js)
+  - [imports/ui/metacell/runtime/sheet-shell-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/sheet-shell-runtime.js)
+- `meteor test --once --port 3188 --driver-package meteortesting:mocha`
+  - passed: `24 passing`
+- `meteor test --once --port 3189 --driver-package meteortesting:mocha`
+  - passed: `24 passing`
+- `meteor test --once --port 3191 --driver-package meteortesting:mocha`
+  - passed: `24 passing`
+- `meteor test --once --port 3192 --driver-package meteortesting:mocha`
+  - passed: `24 passing`
+- `meteor test --once --port 3193 --driver-package meteortesting:mocha`
+  - passed: `24 passing`
+- `meteor test --once --port 3197 --driver-package meteortesting:mocha`
+  - passed: `24 passing`
+- `meteor test --once --port 3198 --driver-package meteortesting:mocha`
+  - passed: `24 passing`
