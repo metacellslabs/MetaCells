@@ -55,3 +55,16 @@ Which produces:
 ```
 Signed-off-by: Your Name <email@example.com>
 ```
+
+## Communication
+
+Please use GitHub Issues or Discussions for questions, suggestions, and discussions.
+Please do not send direct messages.
+Use GitHub Issues or Discussions so answers help everyone.
+
+## Maintainer availability
+
+This project is maintained in spare time.
+
+Issues and pull requests are reviewed once per week.
+Please do not expect immediate responses.

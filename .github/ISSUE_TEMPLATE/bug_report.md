@@ -29,3 +29,9 @@ Describe what you expected to happen.
 ## Additional context
 
 Add logs, screenshots, or other details.
+
+Before submitting:
+
+- Issues are reviewed once per week
+- Please search existing issues
+- Provide reproduction steps

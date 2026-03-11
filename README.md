@@ -17,3 +17,9 @@ If you find Metacells useful, consider supporting development.
 
 - Patreon - https://patreon.com/zentelechia
 - Open Collective - https://opencollective.com/metacellslabs
+
+## Support
+
+- Bugs and actionable tasks -> Issues
+- Questions and ideas -> Discussions
+- No direct messages, please

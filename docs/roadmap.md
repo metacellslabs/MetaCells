@@ -2,6 +2,10 @@
 
 This roadmap reflects the current architecture direction and a practical delivery sequence through the end of 2026.
 
+Roadmap is decided by the maintainer.
+
+Suggestions are welcome but not guaranteed to be implemented.
+
 Estimates are intentionally rough and assume a small team shipping continuously.
 
 ## 2026 Q1
