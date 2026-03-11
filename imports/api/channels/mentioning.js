@@ -30,9 +30,10 @@ export function extractChannelMentionLabels(text) {
   return labels;
 }
 
-export function formatChannelEventForPrompt(payload) {
+export function formatChannelEventForPrompt(payload, options = {}) {
   const source = payload && typeof payload === 'object' ? payload : null;
   if (!source) return '';
+  const includeAttachments = options.includeAttachments === true;
 
   const lines = [];
   const event = normalizeWhitespace(
@@ -49,7 +50,7 @@ export function formatChannelEventForPrompt(payload) {
     : [];
   const date = normalizeWhitespace(source.date || source.receivedAt || '');
   const text = String(source.text == null ? '' : source.text).trim();
-  const attachments = Array.isArray(source.attachments)
+  const attachments = includeAttachments && Array.isArray(source.attachments)
     ? source.attachments
         .map((item) => ({
           name: normalizeWhitespace(item && item.name),
@@ -98,8 +99,9 @@ export function formatChannelEventForPrompt(payload) {
   return lines.join('\n').trim();
 }
 
-export function buildChannelAttachmentLinkSystemPrompt(payload) {
+export function buildChannelAttachmentLinkSystemPrompt(payload, options = {}) {
   const source = payload && typeof payload === 'object' ? payload : null;
+  if (options.includeAttachments !== true) return '';
   const attachments = Array.isArray(source && source.attachments)
     ? source.attachments.filter((item) => item && item.downloadUrl && item.name)
     : [];
@@ -112,8 +114,9 @@ export function buildChannelAttachmentLinkSystemPrompt(payload) {
   ].join(' ');
 }
 
-export function getChannelAttachmentLinkEntries(payload) {
+export function getChannelAttachmentLinkEntries(payload, options = {}) {
   const source = payload && typeof payload === 'object' ? payload : null;
+  if (options.includeAttachments !== true) return [];
   return Array.isArray(source && source.attachments)
     ? source.attachments
         .map((item) => ({

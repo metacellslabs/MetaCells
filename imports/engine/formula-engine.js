@@ -68,7 +68,8 @@ export class FormulaEngine {
         });
       }
       if (raw.charAt(0) === '>') {
-        var listPrompt = this.parseListShortcutPrompt(raw);
+        var listSpec = this.parseListShortcutSpec(raw);
+        var listPrompt = listSpec && listSpec.prompt ? listSpec.prompt : '';
         if (!listPrompt) return raw;
         var listOpts = options || {};
         var listResult = this.listAI(
@@ -78,7 +79,10 @@ export class FormulaEngine {
           null,
           !!listOpts.forceRefreshAI,
           stack,
-          options,
+          Object.assign({}, options || {}, {
+            includeChannelAttachments:
+              !!(listSpec && listSpec.includeAttachments),
+          }),
           0,
         );
         if (listResult === '...' || listResult === '(manual: click Update)') {
@@ -87,6 +91,10 @@ export class FormulaEngine {
         return raw;
       }
       if (raw.charAt(0) === '#') {
+        var channelFeedSpec = this.parseChannelFeedPromptSpec(raw);
+        if (channelFeedSpec) {
+          return raw;
+        }
         var tableSpec = this.parseTablePromptSpec(raw);
         if (!tableSpec) return raw;
         if (!tableSpec.prompt) return '';
@@ -99,7 +107,9 @@ export class FormulaEngine {
           tableSpec.rows,
           !!tableOpts.forceRefreshAI,
           stack,
-          options,
+          Object.assign({}, options || {}, {
+            includeChannelAttachments: false,
+          }),
         );
         if (tableResult === '...' || tableResult === '(manual: click Update)') {
           return tableResult;

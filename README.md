@@ -1,25 +1,59 @@
-## Sponsors ❤️
+# Metacells
 
-SuperFolders
+Metacells is a spreadsheet-style workspace with formulas, AI prompts, reports, file cells, and channel integrations.
 
-DigiShares
+## Channel Sends
 
-## Funding
+Channel sends run once when you commit a cell containing a send command.
 
-This project is supported by early sponsors.
+### Telegram
 
-If your company relies on this software,
-consider sponsoring its development.
+Use either form:
 
-## Support the project
+- `/tg hello from Metacells`
+- `/tg:send:hello from Metacells`
 
-If you find Metacells useful, consider supporting development.
+If the message references workbook attachment cells, Telegram sends the real files. Any remaining text is sent as the caption or follow-up message.
 
-- Patreon - https://patreon.com/zentelechia
-- Open Collective - https://opencollective.com/metacellslabs
+Examples:
 
-## Support
+```text
+/tg hello
+/tg @policy uploaded
+/tg:send:@logo done
+```
 
-- Bugs and actionable tasks -> Issues
-- Questions and ideas -> Discussions
-- No direct messages, please
+### Email (IMAP + SMTP)
+
+Email sends require a structured payload so the sender has `to`, and usually `subj` and `body`.
+
+Use:
+
+```text
+/sf:send:{"to":"user@example.com","subj":"Hi","body":"hello"}
+```
+
+You can provide `to` as a string or an array.
+
+Examples:
+
+```text
+/sf:send:{"to":"user@example.com","subj":"Status","body":"hello"}
+/sf:send:{"to":["a@example.com","b@example.com"],"subj":"Report","body":"see attached @policy"}
+```
+
+## File Cells
+
+File cells store uploaded files in the workbook. They:
+
+- show the filename in the sheet
+- expose extracted text content to AI prompts
+- can be sent through supported channels as real attachments
+
+Examples:
+
+```text
+'Summarise @policy
+/tg @policy uploaded
+File:@policy:[Upload policy PDF]
+```

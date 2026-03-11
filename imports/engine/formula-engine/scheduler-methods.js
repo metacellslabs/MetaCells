@@ -139,6 +139,16 @@ export const schedulerMethods = {
     }
 
     if (raw.charAt(0) === '#') {
+      var channelSpec =
+        typeof this.parseChannelFeedPromptSpec === 'function'
+          ? this.parseChannelFeedPromptSpec(raw)
+          : null;
+      if (channelSpec && channelSpec.prompt) {
+        return this.collectFormulaReferenceDependencies(
+          sheetId,
+          channelSpec.prompt,
+        );
+      }
       var spec =
         typeof this.parseTablePromptSpec === 'function'
           ? this.parseTablePromptSpec(raw)

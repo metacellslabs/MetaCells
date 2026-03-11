@@ -447,7 +447,11 @@ describe('metacells', function () {
       );
 
       assert.ok(connectors.some((item) => item.id === 'imap-email'));
+      assert.ok(connectors.some((item) => item.id === 'telegram'));
+      assert.ok(connectors.some((item) => item.id === 'twitter'));
       assert.ok(manifest.some((item) => item.file === 'IMAP.js'));
+      assert.ok(manifest.some((item) => item.file === 'TELEGRAM.js'));
+      assert.ok(manifest.some((item) => item.file === 'TWITTER.js'));
       assert.ok(
         manifest.every((item) =>
           /^[0-9a-f]{8}$/.test(String(item.discoveryHash || '')),
@@ -461,7 +465,15 @@ describe('metacells', function () {
       );
       assert.ok(
         helpSection.items.some((item) =>
-          String(item).includes('/channel1:send:message'),
+          String(item).includes('/tg:send:hello'),
+        ),
+      );
+      assert.ok(
+        helpSection.items.some((item) => String(item).includes('Telegram')),
+      );
+      assert.ok(
+        helpSection.items.some((item) =>
+          String(item).includes('Twitter / X'),
         ),
       );
     });
@@ -482,9 +494,153 @@ describe('metacells', function () {
       );
     });
 
+    it('returns a readable error for invalid Telegram test settings', async function () {
+      const { testTelegramConnection } = await import(
+        '../imports/api/channels/server/handlers/telegram.js'
+      );
+
+      await assert.rejects(
+        () =>
+          testTelegramConnection({
+            token: '',
+            chatId: '',
+          }),
+        /Telegram bot token is required/,
+      );
+    });
+
+    it('returns a readable error for invalid Twitter/X test settings', async function () {
+      const { testTwitterConnection } = await import(
+        '../imports/api/channels/server/handlers/twitter.js'
+      );
+
+      await assert.rejects(
+        () =>
+          testTwitterConnection({
+            accessToken: '',
+            apiBaseUrl: 'https://api.x.com',
+          }),
+        /Twitter\/X access token is required/,
+      );
+    });
+
+    it('rejects Twitter/X attachments before calling the API', async function () {
+      const { sendTwitterMessage } = await import(
+        '../imports/api/channels/server/handlers/twitter.js'
+      );
+
+      await assert.rejects(
+        () =>
+          sendTwitterMessage({
+            settings: {
+              accessToken: 'token',
+              apiBaseUrl: 'https://api.x.com',
+            },
+            body: 'hello',
+            attachments: [{ name: 'logo.png' }],
+          }),
+        /does not support attachments yet/,
+      );
+    });
+
+    it('parses slash-send channel commands', async function () {
+      const {
+        buildChannelSendAttachmentsFromPreparedPrompt,
+        buildChannelSendBodyFromPreparedPrompt,
+        parseChannelSendCommand,
+        stripChannelSendFileAndImagePlaceholders,
+      } = await import(
+        '../imports/api/channels/commands.js'
+      );
+
+      assert.deepStrictEqual(
+        parseChannelSendCommand('/tg hello from sheet'),
+        {
+          label: 'tg',
+          message: 'hello from sheet',
+        },
+      );
+      assert.deepStrictEqual(parseChannelSendCommand('/tg:send:message'), {
+        label: 'tg',
+        message: 'message',
+      });
+      assert.deepStrictEqual(parseChannelSendCommand('/sf:send:hello'), {
+        label: 'sf',
+        message: 'hello',
+      });
+      assert.deepStrictEqual(
+        parseChannelSendCommand(
+          '/sf:send:{"to":"zentelechia@gmail.com","subj":"Hi","body":"hello"}',
+        ),
+        {
+          label: 'sf',
+          message: '{"to":"zentelechia@gmail.com","subj":"Hi","body":"hello"}',
+        },
+      );
+      assert.strictEqual(parseChannelSendCommand('plain text'), null);
+
+      assert.strictEqual(
+        buildChannelSendBodyFromPreparedPrompt({
+          userPrompt: 'hello',
+          userContent: [
+            { type: 'text', text: 'hello <attached file: policy.txt>' },
+            { type: 'text', text: 'Attached file: policy.txt\n\nPolicy body' },
+          ],
+        }),
+        'hello <attached file: policy.txt>\n\nAttached file: policy.txt\n\nPolicy body',
+      );
+      assert.strictEqual(
+        buildChannelSendBodyFromPreparedPrompt({
+          userPrompt: '<attached image: logo.png> okok',
+        }),
+        'okok',
+      );
+      assert.strictEqual(
+        stripChannelSendFileAndImagePlaceholders(
+          '<attached file: policy.txt> hello',
+        ),
+        'hello',
+      );
+      assert.deepStrictEqual(
+        buildChannelSendAttachmentsFromPreparedPrompt({
+          imageAttachments: [
+            {
+              name: 'logo.png',
+              type: 'image/png',
+              downloadUrl: '/artifacts/logo',
+            },
+          ],
+          textAttachments: [
+            {
+              name: 'policy.pdf',
+              type: 'application/pdf',
+              downloadUrl: '/artifacts/policy',
+            },
+          ],
+        }),
+        [
+          {
+            name: 'logo.png',
+            type: 'image/png',
+            binaryArtifactId: '',
+            downloadUrl: '/artifacts/logo',
+          },
+          {
+            name: 'policy.pdf',
+            type: 'application/pdf',
+            binaryArtifactId: '',
+            downloadUrl: '/artifacts/policy',
+          },
+        ],
+      );
+    });
+
     it('collects and injects channel mentions into AI prompts', async function () {
       const { FormulaEngine } =
         await import('../imports/engine/formula-engine.js');
+      const { formatChannelEventForPrompt } = await import(
+        '../imports/api/channels/mentioning.js'
+      );
 
       const storageService = {
         getCellValue() {
@@ -542,6 +698,183 @@ describe('metacells', function () {
       assert.match(prepared.userPrompt, /Event: message\.new/);
       assert.match(prepared.userPrompt, /Subject: New task/);
       assert.match(prepared.userPrompt, /Please prepare the weekly summary\./);
+
+      const withoutAttachments = formatChannelEventForPrompt(
+        {
+          label: 'sf',
+          subject: 'New task',
+          text: 'Please prepare the weekly summary.',
+          attachments: [{ name: 'invoice.pdf', content: 'invoice body' }],
+        },
+        { includeAttachments: false },
+      );
+      assert.doesNotMatch(withoutAttachments, /Attachments:/);
+
+      const withAttachments = formatChannelEventForPrompt(
+        {
+          label: 'sf',
+          subject: 'New task',
+          text: 'Please prepare the weekly summary.',
+          attachments: [{ name: 'invoice.pdf', content: 'invoice body' }],
+        },
+        { includeAttachments: true },
+      );
+      assert.match(withAttachments, /Attachments:/);
+    });
+
+    it('sends file mentions as attached text content while preserving prompt text', async function () {
+      const { buildChannelSendBodyFromPreparedPrompt } = await import(
+        '../imports/api/channels/commands.js'
+      );
+      const { FormulaEngine } =
+        await import('../imports/engine/formula-engine.js');
+
+      const storageService = {
+        getCellValue(sheetId, cellId) {
+          if (cellId === 'A1') {
+            return '__ATTACHMENT__:{"name":"policy.txt","type":"text/plain","content":"Policy body"}';
+          }
+          return '';
+        },
+        getCellState() {
+          return 'resolved';
+        },
+        getCellDisplayValue() {
+          return '';
+        },
+        resolveNamedCell(name) {
+          if (name === 'file') return { sheetId: 'sheet-1', cellId: 'A1' };
+          return null;
+        },
+      };
+      const formulaEngine = new FormulaEngine(
+        storageService,
+        {},
+        () => [{ id: 'sheet-1', name: 'Sheet 1', type: 'sheet' }],
+        ['A1', 'B1'],
+      );
+
+      const prepared = formulaEngine.prepareAIPrompt(
+        'sheet-1',
+        'summarize @file briefly',
+        {},
+        { channelPayloads: {} },
+      );
+
+      assert.strictEqual(
+        prepared.userPrompt,
+        'summarize <attached file: policy.txt> briefly',
+      );
+      assert.ok(Array.isArray(prepared.userContent));
+      assert.deepStrictEqual(prepared.userContent[0], {
+        type: 'text',
+        text: 'summarize <attached file: policy.txt> briefly',
+      });
+      assert.deepStrictEqual(prepared.userContent[1], {
+        type: 'text',
+        text: 'Attached file: policy.txt\n\nPolicy body',
+      });
+      assert.deepStrictEqual(prepared.textAttachments, [
+        {
+          sheetId: 'sheet-1',
+          cellId: 'A1',
+          name: 'policy.txt',
+          type: 'text/plain',
+          binaryArtifactId: '',
+          url: '',
+          downloadUrl: '',
+          previewUrl: '',
+          content: 'Policy body',
+        },
+      ]);
+      assert.strictEqual(
+        buildChannelSendBodyFromPreparedPrompt(prepared),
+        'summarize <attached file: policy.txt> briefly\n\nAttached file: policy.txt\n\nPolicy body',
+      );
+    });
+
+    it('parses channel-feed shortcuts without breaking table shortcuts', async function () {
+      const { FormulaEngine } =
+        await import('../imports/engine/formula-engine.js');
+
+      const storageService = {
+        getCellValue() {
+          return '';
+        },
+        getCellState() {
+          return 'resolved';
+        },
+        resolveNamedCell() {
+          return null;
+        },
+      };
+      const formulaEngine = new FormulaEngine(
+        storageService,
+        {},
+        () => [{ id: 'sheet-1', name: 'Sheet 1', type: 'sheet' }],
+        ['A1'],
+      );
+
+      const todaySpec = formulaEngine.parseChannelFeedPromptSpec(
+        '# /sf summarise each message',
+      );
+      assert.deepStrictEqual(todaySpec, {
+        prompt: '/sf summarise each message',
+        days: 1,
+        labels: ['sf'],
+        includeAttachments: false,
+      });
+
+      const weekSpec = formulaEngine.parseChannelFeedPromptSpec(
+        '#7 /sf extract action items',
+      );
+      assert.deepStrictEqual(weekSpec, {
+        prompt: '/sf extract action items',
+        days: 7,
+        labels: ['sf'],
+        includeAttachments: false,
+      });
+
+      const attachmentOptInWeekSpec = formulaEngine.parseChannelFeedPromptSpec(
+        '#+7 /sf extract action items',
+      );
+      assert.deepStrictEqual(attachmentOptInWeekSpec, {
+        prompt: '/sf extract action items',
+        days: 7,
+        labels: ['sf'],
+        includeAttachments: true,
+      });
+
+      const listSpec = formulaEngine.parseListShortcutSpec(
+        '> /sf any payment requests?',
+      );
+      assert.deepStrictEqual(listSpec, {
+        prompt: '/sf any payment requests?',
+        includeAttachments: false,
+        days: 1,
+      });
+
+      const listAttachmentSpec = formulaEngine.parseListShortcutSpec(
+        '>+7 /sf any payment requests?',
+      );
+      assert.deepStrictEqual(listAttachmentSpec, {
+        prompt: '/sf any payment requests?',
+        includeAttachments: true,
+        days: 7,
+      });
+
+      assert.strictEqual(
+        formulaEngine.parseChannelFeedPromptSpec('#compare @idea;4;6'),
+        null,
+      );
+      assert.deepStrictEqual(
+        formulaEngine.parseTablePromptSpec('#compare @idea;4;6'),
+        {
+          prompt: 'compare @idea',
+          cols: 4,
+          rows: 6,
+        },
+      );
     });
 
     it('builds default settings from discovered AI providers', async function () {
@@ -2150,6 +2483,101 @@ describe('metacells', function () {
           'resolved',
         );
         assert.strictEqual(decoded.caches['AI_CACHE:\n---\n4+4'], '8');
+      } finally {
+        await Sheets.removeAsync({ _id: sheetId });
+      }
+    });
+
+    it('preserves persisted generated spill cells when a lagging client workbook is saved', async function () {
+      const { Sheets } = await import('../imports/api/sheets/index.js');
+      const { decodeWorkbookDocument } =
+        await import('../imports/api/sheets/workbook-codec.js');
+      const sheetId = await Meteor.server.method_handlers[
+        'sheets.create'
+      ].apply({}, ['Test Generated Spill Merge']);
+
+      try {
+        const persistedWorkbook = {
+          version: 1,
+          tabs: [{ id: 'sheet-1', name: 'Sheet 1', type: 'sheet' }],
+          activeTabId: 'sheet-1',
+          aiMode: 'auto',
+          namedCells: {},
+          sheets: {
+            'sheet-1': {
+              cells: {
+                B4: {
+                  source: '#2 /sf any invoices to pay',
+                  sourceType: 'formula',
+                  value: '#2 /sf any invoices to pay',
+                  state: 'resolved',
+                  error: '',
+                  generatedBy: '',
+                  version: 1,
+                },
+                B5: {
+                  source: 'Invoice A',
+                  sourceType: 'raw',
+                  value: 'Invoice A',
+                  state: 'resolved',
+                  error: '',
+                  generatedBy: 'B4',
+                  version: 1,
+                },
+              },
+              columnWidths: {},
+              rowHeights: {},
+              reportContent: '',
+            },
+          },
+          dependencyGraph: {
+            byCell: {
+              'sheet-1:B4': {
+                cells: [],
+                namedRefs: [],
+                channelLabels: ['sf'],
+                attachments: [],
+              },
+            },
+          },
+          caches: {},
+          globals: {},
+        };
+
+        await Sheets.updateAsync(
+          { _id: sheetId },
+          {
+            $set: {
+              workbook: persistedWorkbook,
+              updatedAt: new Date(),
+            },
+            $unset: { storage: '' },
+          },
+        );
+
+        const laggingClientWorkbook = {
+          ...persistedWorkbook,
+          sheets: {
+            'sheet-1': {
+              ...persistedWorkbook.sheets['sheet-1'],
+              cells: {
+                B4: {
+                  ...persistedWorkbook.sheets['sheet-1'].cells.B4,
+                },
+              },
+            },
+          },
+        };
+
+        await Meteor.server.method_handlers['sheets.saveWorkbook'].apply({}, [
+          sheetId,
+          laggingClientWorkbook,
+        ]);
+
+        const saved = await Sheets.findOneAsync(sheetId);
+        const decoded = decodeWorkbookDocument(saved.workbook || {});
+        assert.strictEqual(decoded.sheets['sheet-1'].cells.B5.source, 'Invoice A');
+        assert.strictEqual(decoded.sheets['sheet-1'].cells.B5.generatedBy, 'B4');
       } finally {
         await Sheets.removeAsync({ _id: sheetId });
       }

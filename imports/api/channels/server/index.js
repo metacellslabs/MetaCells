@@ -19,6 +19,14 @@ import {
   handleImapEvent,
   pollImapMessages,
 } from './handlers/imap.js';
+import {
+  testTelegramConnection,
+  sendTelegramMessage,
+} from './handlers/telegram.js';
+import {
+  testTwitterConnection,
+  sendTwitterMessage,
+} from './handlers/twitter.js';
 
 const activeChannelPolls = new Set();
 let channelPollingWorkerStarted = false;
@@ -56,6 +64,22 @@ function getChannelHandler(connectorId) {
       poll: pollImapMessages,
     };
   }
+  if (connectorId === 'telegram') {
+    return {
+      testConnection: testTelegramConnection,
+      send: sendTelegramMessage,
+      eventHandler: async () => ({ event: '', message: null }),
+      poll: null,
+    };
+  }
+  if (connectorId === 'twitter') {
+    return {
+      testConnection: testTwitterConnection,
+      send: sendTwitterMessage,
+      eventHandler: async () => ({ event: '', message: null }),
+      poll: null,
+    };
+  }
   throw new Meteor.Error(
     'channel-connector-not-supported',
     `Unsupported channel connector: ${connectorId}`,
@@ -66,6 +90,28 @@ function buildNormalizedChannels(current) {
   return Array.isArray(current && current.communicationChannels)
     ? [...current.communicationChannels]
     : [];
+}
+
+function findConfiguredChannelById(channels, channelId) {
+  const target = String(channelId || '').trim();
+  return (
+    (Array.isArray(channels) ? channels : []).find(
+      (item) => item && String(item.id || '') === target,
+    ) || null
+  );
+}
+
+function findConfiguredChannelByLabel(channels, label) {
+  const target = normalizeChannelLabel(label);
+  if (!target) return null;
+  return (
+    (Array.isArray(channels) ? channels : []).find(
+      (item) =>
+        item &&
+        item.enabled !== false &&
+        normalizeChannelLabel(item.label) === target,
+    ) || null
+  );
 }
 
 async function saveChannelRuntimeState(channelId, updates) {
@@ -570,7 +616,7 @@ if (Meteor.isServer) {
       const channels = Array.isArray(current && current.communicationChannels)
         ? current.communicationChannels
         : [];
-      const channel = channels.find((item) => item && item.id === channelId);
+      const channel = findConfiguredChannelById(channels, channelId);
       if (!channel) {
         throw new Meteor.Error(
           'channel-not-found',
@@ -580,7 +626,50 @@ if (Meteor.isServer) {
 
       const handler = getChannelHandler(channel.connectorId);
       return handler.send({
-        settings: channel.settings || {},
+        settings: normalizeChannelSettings(connector, channel.settings),
+        to: Array.isArray(payload.to) ? payload.to : [],
+        subj: String(payload.subj || ''),
+        body: String(payload.body || ''),
+        attachments: Array.isArray(payload.attachments)
+          ? payload.attachments
+          : [],
+      });
+    },
+
+    async 'channels.sendByLabel'(label, payload) {
+      check(label, String);
+      check(
+        payload,
+        Match.Where(
+          (value) =>
+            !!value && typeof value === 'object' && !Array.isArray(value),
+        ),
+      );
+
+      await ensureDefaultSettings();
+      const current = await AppSettings.findOneAsync(DEFAULT_SETTINGS_ID);
+      const channels = Array.isArray(current && current.communicationChannels)
+        ? current.communicationChannels
+        : [];
+      const channel = findConfiguredChannelByLabel(channels, label);
+      if (!channel) {
+        throw new Meteor.Error(
+          'channel-not-found',
+          `Communication channel "/${normalizeChannelLabel(label)}" not found`,
+        );
+      }
+
+      const connector = getRegisteredChannelConnectorById(channel.connectorId);
+      if (!connector) {
+        throw new Meteor.Error(
+          'channel-connector-not-found',
+          'Channel connector not found',
+        );
+      }
+
+      const handler = getChannelHandler(channel.connectorId);
+      return handler.send({
+        settings: normalizeChannelSettings(connector, channel.settings),
         to: Array.isArray(payload.to) ? payload.to : [],
         subj: String(payload.subj || ''),
         body: String(payload.body || ''),

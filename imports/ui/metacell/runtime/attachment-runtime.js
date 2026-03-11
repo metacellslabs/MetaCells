@@ -19,6 +19,33 @@ function syncActiveAttachmentValue(app, cellId, rawValue) {
   app.formulaInput.value = displayValue;
 }
 
+function refreshAttachmentUi(app, sheetId) {
+  if (!app) return;
+  var targetSheetId = String(sheetId || app.activeSheetId || '');
+  if (
+    targetSheetId &&
+    app.activeSheetId === targetSheetId &&
+    typeof app.renderCurrentSheetFromStorage === 'function'
+  ) {
+    app.renderCurrentSheetFromStorage();
+    return;
+  }
+  if (typeof app.renderReportLiveValues === 'function') {
+    app.renderReportLiveValues(true);
+  }
+}
+
+function revealAttachmentCell(app, sheetId, cellId) {
+  if (!app || !app.grid) return;
+  var targetSheetId = String(sheetId || '');
+  var targetCellId = String(cellId || '').toUpperCase();
+  if (!targetSheetId || !targetCellId) return;
+  if (app.activeSheetId !== targetSheetId) return;
+  var input = app.inputById ? app.inputById[targetCellId] : null;
+  if (!input || typeof app.grid.setEditing !== 'function') return;
+  app.grid.setEditing(input, false);
+}
+
 export function setupAttachmentControls(app) {
   app.syncAttachButtonState();
   if (app.attachFileButton) {
@@ -39,6 +66,8 @@ export function setupAttachmentControls(app) {
       var pendingSource = app.buildAttachmentSource({ pending: true });
       app.setRawCellValue(cellId, pendingSource);
       syncActiveAttachmentValue(app, cellId, pendingSource);
+      revealAttachmentCell(app, app.activeSheetId, cellId);
+      refreshAttachmentUi(app, app.activeSheetId);
       app.computeAll();
     });
   }
@@ -69,6 +98,12 @@ export function setupAttachmentControls(app) {
         var pendingSource = app.buildAttachmentSource({ pending: true });
         app.setRawCellValue(input.id, pendingSource);
         syncActiveAttachmentValue(app, input.id, pendingSource);
+        revealAttachmentCell(
+          app,
+          app.activeSheetId,
+          String(input.id || '').toUpperCase(),
+        );
+        refreshAttachmentUi(app, app.activeSheetId);
         app.computeAll();
         return;
       }
@@ -92,6 +127,8 @@ export function setupAttachmentControls(app) {
       if (!file) {
         app.storage.setCellValue(ctx.sheetId, ctx.cellId, ctx.previousValue);
         syncActiveAttachmentValue(app, ctx.cellId, ctx.previousValue);
+        revealAttachmentCell(app, ctx.sheetId, ctx.cellId);
+        refreshAttachmentUi(app, ctx.sheetId);
         app.computeAll();
         return;
       }
@@ -119,14 +156,15 @@ export function setupAttachmentControls(app) {
         );
         app.storage.setCellValue(ctx.sheetId, ctx.cellId, attachmentSource);
         syncActiveAttachmentValue(app, ctx.cellId, attachmentSource);
-        if (app.isReportActive()) {
-          app.renderReportLiveValues(true);
-        }
+        revealAttachmentCell(app, ctx.sheetId, ctx.cellId);
+        refreshAttachmentUi(app, ctx.sheetId);
         app.aiService.notifyActiveCellChanged();
         app.computeAll();
       } catch (error) {
         app.storage.setCellValue(ctx.sheetId, ctx.cellId, ctx.previousValue);
         syncActiveAttachmentValue(app, ctx.cellId, ctx.previousValue);
+        revealAttachmentCell(app, ctx.sheetId, ctx.cellId);
+        refreshAttachmentUi(app, ctx.sheetId);
         window.alert(
           error && error.message ? error.message : 'Failed to read file',
         );

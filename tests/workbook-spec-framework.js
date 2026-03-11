@@ -246,7 +246,7 @@ function extractUserPromptFromMessages(messages) {
         if (part.type === 'text') return String(part.text == null ? '' : part.text);
         return '';
       })
-      .join('')
+      .join('\n\n')
       .trim();
   }
   return '';

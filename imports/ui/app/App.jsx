@@ -1548,8 +1548,53 @@ function SheetPage({
   const storageRef = useRef(null);
   const lastWorkbookDocumentRef = useRef(null);
   const lastWorkbookSyncKeyRef = useRef('');
+  const pendingWorkbookDocumentRef = useRef(null);
+  const pendingWorkbookSyncKeyRef = useRef('');
+  const remoteSyncTimerRef = useRef(null);
   const [workbookName, setWorkbookName] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
+
+  const canApplyRemoteWorkbook = () => {
+    if (!appRef.current || !storageRef.current) return false;
+    if (
+      typeof appRef.current.hasPendingLocalEdit === 'function' &&
+      appRef.current.hasPendingLocalEdit()
+    ) {
+      return false;
+    }
+    if (
+      storageRef.current &&
+      typeof storageRef.current.hasPendingPersistence === 'function' &&
+      storageRef.current.hasPendingPersistence()
+    ) {
+      return false;
+    }
+    return true;
+  };
+
+  const applyRemoteWorkbookDocument = (workbookDocument, syncKey) => {
+    if (!appRef.current || !storageRef.current) return false;
+    lastWorkbookDocumentRef.current = workbookDocument;
+    lastWorkbookSyncKeyRef.current = syncKey;
+    pendingWorkbookDocumentRef.current = null;
+    pendingWorkbookSyncKeyRef.current = '';
+    storageRef.current.replaceAll(decodeWorkbookDocument(workbookDocument));
+    if (typeof appRef.current.renderCurrentSheetFromStorage === 'function') {
+      appRef.current.renderCurrentSheetFromStorage();
+    } else {
+      appRef.current.computeAll();
+    }
+    return true;
+  };
+
+  const flushPendingRemoteWorkbook = () => {
+    if (!pendingWorkbookDocumentRef.current) return false;
+    if (!canApplyRemoteWorkbook()) return false;
+    return applyRemoteWorkbookDocument(
+      pendingWorkbookDocumentRef.current,
+      pendingWorkbookSyncKeyRef.current,
+    );
+  };
 
   useEffect(() => {
     document.body.classList.add(
@@ -1649,6 +1694,10 @@ function SheetPage({
     });
 
     return () => {
+      if (remoteSyncTimerRef.current) {
+        clearInterval(remoteSyncTimerRef.current);
+        remoteSyncTimerRef.current = null;
+      }
       if (appRef.current && typeof appRef.current.destroy === 'function') {
         appRef.current.destroy();
       }
@@ -1656,8 +1705,26 @@ function SheetPage({
       storageRef.current = null;
       lastWorkbookDocumentRef.current = null;
       lastWorkbookSyncKeyRef.current = '';
+      pendingWorkbookDocumentRef.current = null;
+      pendingWorkbookSyncKeyRef.current = '';
     };
   }, [isLoading, sheetId, initialTabId, publishedMode]);
+
+  useEffect(() => {
+    if (remoteSyncTimerRef.current) {
+      clearInterval(remoteSyncTimerRef.current);
+      remoteSyncTimerRef.current = null;
+    }
+    remoteSyncTimerRef.current = setInterval(() => {
+      flushPendingRemoteWorkbook();
+    }, 250);
+    return () => {
+      if (remoteSyncTimerRef.current) {
+        clearInterval(remoteSyncTimerRef.current);
+        remoteSyncTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (
@@ -1701,27 +1768,12 @@ function SheetPage({
     ) {
       return;
     }
-    if (
-      typeof appRef.current.hasPendingLocalEdit === 'function' &&
-      appRef.current.hasPendingLocalEdit()
-    )
-      return;
-    if (
-      storageRef.current &&
-      typeof storageRef.current.hasPendingPersistence === 'function' &&
-      storageRef.current.hasPendingPersistence()
-    ) {
+    if (!canApplyRemoteWorkbook()) {
+      pendingWorkbookDocumentRef.current = nextWorkbookDocument;
+      pendingWorkbookSyncKeyRef.current = nextWorkbookSyncKey;
       return;
     }
-
-    lastWorkbookDocumentRef.current = nextWorkbookDocument;
-    lastWorkbookSyncKeyRef.current = nextWorkbookSyncKey;
-    storageRef.current.replaceAll(decodeWorkbookDocument(nextWorkbookDocument));
-    if (typeof appRef.current.renderCurrentSheetFromStorage === 'function') {
-      appRef.current.renderCurrentSheetFromStorage();
-    } else {
-      appRef.current.computeAll();
-    }
+    applyRemoteWorkbookDocument(nextWorkbookDocument, nextWorkbookSyncKey);
   }, [isLoading, sheet]);
 
   if (isLoading) {

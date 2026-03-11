@@ -1,6 +1,12 @@
 // Description: Application controller that wires UI, storage, grid rendering, tabs, formulas, and AI updates.
 import { Meteor } from 'meteor/meteor';
 import {
+  buildChannelSendAttachmentsFromPreparedPrompt,
+  buildChannelSendBodyFromPreparedPrompt,
+  parseChannelSendCommand,
+  stripChannelSendFileAndImagePlaceholders,
+} from '../../../api/channels/commands.js';
+import {
   GRID_ROWS,
   GRID_COLS,
   DEFAULT_COL_WIDTH,
@@ -240,6 +246,36 @@ import {
 } from './selection-runtime.js';
 
 var REPORT_TAB_ID = 'report';
+
+function normalizeChannelSendRecipients(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item == null ? '' : item).trim())
+      .filter(Boolean);
+  }
+  var raw = String(value == null ? '' : value).trim();
+  if (!raw) return [];
+  return raw
+    .split(/[,\n;]/)
+    .map(function (item) {
+      return String(item || '').trim();
+    })
+    .filter(Boolean);
+}
+
+function parseStructuredChannelSendMessage(message) {
+  var raw = String(message == null ? '' : message).trim();
+  if (!raw || raw.charAt(0) !== '{') return null;
+  try {
+    var parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
 
 export class SpreadsheetApp {
   constructor(options) {
@@ -736,6 +772,73 @@ export class SpreadsheetApp {
     );
   }
 
+  runChannelSendCommandForCell(cellId, rawValue) {
+    var normalizedCellId = String(cellId || '').toUpperCase();
+    var raw = String(rawValue == null ? '' : rawValue);
+    var command = parseChannelSendCommand(raw);
+    if (!command || !command.label || !command.message) return false;
+    var structuredPayload = parseStructuredChannelSendMessage(command.message);
+    var messageTemplate = structuredPayload
+      ? String(structuredPayload.body || '')
+      : command.message;
+    var prepared = this.formulaEngine.prepareAIPrompt(
+      this.activeSheetId,
+      messageTemplate,
+      {},
+      {},
+    );
+    var outboundAttachments =
+      buildChannelSendAttachmentsFromPreparedPrompt(prepared);
+    var outboundBody = outboundAttachments.length
+      ? stripChannelSendFileAndImagePlaceholders(prepared.userPrompt || '')
+      : buildChannelSendBodyFromPreparedPrompt(prepared);
+    var outboundPayload = structuredPayload
+      ? {
+          to: normalizeChannelSendRecipients(structuredPayload.to),
+          subj: String(structuredPayload.subj || ''),
+          body: outboundBody,
+          attachments: outboundAttachments,
+        }
+      : {
+          body: outboundBody,
+          attachments: outboundAttachments,
+        };
+
+    this.setRawCellValue(normalizedCellId, raw);
+    this.storage.setCellRuntimeState(this.activeSheetId, normalizedCellId, {
+      value: `Sending to /${command.label}...`,
+      state: 'pending',
+      error: '',
+    });
+    this.renderCurrentSheetFromStorage();
+    if (this.activeInput && this.activeInput.id === normalizedCellId) {
+      this.formulaInput.value = raw;
+    }
+
+    Meteor.callAsync('channels.sendByLabel', command.label, outboundPayload)
+      .then(() => {
+        this.storage.setCellRuntimeState(this.activeSheetId, normalizedCellId, {
+          value: `Sent to /${command.label}`,
+          state: 'resolved',
+          error: '',
+        });
+        this.renderCurrentSheetFromStorage();
+      })
+      .catch((error) => {
+        var message = String(
+          (error && (error.reason || error.message)) ||
+            'Failed to send channel message',
+        ).trim();
+        this.storage.setCellRuntimeState(this.activeSheetId, normalizedCellId, {
+          value: '#ERROR',
+          state: 'error',
+          error: message,
+        });
+        this.renderCurrentSheetFromStorage();
+      });
+    return true;
+  }
+
   beginCellUpdateTrace(cellId, rawValue) {
     if (!shouldProfileCellUpdatesClient()) return null;
     var trace = createCellUpdateTrace({
@@ -1155,6 +1258,12 @@ export class SpreadsheetApp {
     this.captureHistorySnapshot(
       'cell:' + this.activeSheetId + ':' + normalizedCellId,
     );
+    if (this.runChannelSendCommandForCell(normalizedCellId, raw)) {
+      traceCellUpdateClient(trace, 'channel_send.dispatched', {
+        cellId: normalizedCellId,
+      });
+      return;
+    }
     this.setRawCellValue(normalizedCellId, raw);
     this.aiService.notifyActiveCellChanged();
     if (this.activeInput && this.activeInput.id === normalizedCellId) {
@@ -1259,7 +1368,42 @@ export class SpreadsheetApp {
     return { prompt: payload, cols: null, rows: null };
   }
 
+  parseChannelFeedPromptSpec(rawValue) {
+    var raw = String(rawValue == null ? '' : rawValue);
+    if (!raw || raw.charAt(0) !== '#') return null;
+
+    var payload = raw.substring(1).trim();
+    if (!payload) return null;
+
+    var match = /^(\+)?(\d+)?\s*(.+)$/.exec(payload);
+    if (!match) return null;
+
+    var includeAttachments = match[1] === '+';
+    var dayToken = String(match[2] || '').trim();
+    var prompt = String(match[3] || '').trim();
+    if (!prompt) return null;
+    if (!/(^|[^A-Za-z0-9_:/])\/([A-Za-z][A-Za-z0-9_-]*)\b/.test(prompt))
+      return null;
+
+    var days = dayToken ? parseInt(dayToken, 10) : 1;
+    if (isNaN(days) || days < 1) return null;
+
+    return { prompt: prompt, days: days, includeAttachments: includeAttachments };
+  }
+
   runTablePromptForCell(cellId, rawValue, inputElement) {
+    var channelSpec = this.parseChannelFeedPromptSpec(rawValue);
+    if (channelSpec) {
+      this.captureHistorySnapshot(
+        'cell:' + this.activeSheetId + ':' + String(cellId || '').toUpperCase(),
+      );
+      this.setRawCellValue(cellId, String(rawValue));
+      if (inputElement) inputElement.value = String(rawValue);
+      if (this.activeInput && this.activeInput.id === cellId)
+        this.formulaInput.value = String(rawValue);
+      this.computeAll();
+      return true;
+    }
     var spec = this.parseTablePromptSpec(rawValue);
     if (!spec) return false;
     this.captureHistorySnapshot(

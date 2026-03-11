@@ -30,7 +30,9 @@
   },
   "aiMocks": [
     {
-      "match": { "includes": "дай короткое summary файла Company policy" },
+      "match": {
+        "includes": "дай короткое summary файла <attached file: policy.txt> Attached file: policy.txt Company policy"
+      },
       "response": "Policy summary ready",
       "delayMs": 20
     }

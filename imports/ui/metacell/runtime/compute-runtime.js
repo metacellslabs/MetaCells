@@ -225,9 +225,7 @@ export function renderCurrentSheetFromStorage(app) {
       var literalDisplay = !!raw && raw.charAt(0) === '#';
       var showFormulas = app.displayMode === 'formulas';
       var displayValue = showFormulas
-        ? generatedBy
-          ? ''
-          : raw
+        ? raw
         : isFormula
           ? storedDisplay
           : raw;
@@ -237,9 +235,6 @@ export function renderCurrentSheetFromStorage(app) {
           attachment.name ||
             (attachment.pending ? 'Select file' : 'Attached file'),
         );
-      }
-      if (showFormulas && generatedBy && !attachment) {
-        displayValue = '';
       }
       if (String(displayValue || '').indexOf('#AI_ERROR:') === 0) {
         displayValue =
@@ -455,6 +450,11 @@ export function computeAll(app) {
 
       app.computedValuesBySheet[activeSheetId] =
         result && result.values ? result.values : {};
+      if (result && result.workbook) {
+        renderCurrentSheetFromStorage(app);
+        finishManualUpdate();
+        return;
+      }
       var computedValues = app.computedValuesBySheet[activeSheetId] || {};
       var renderTargets = getRenderTargetsForComputeResult(
         app,
@@ -496,15 +496,12 @@ export function computeAll(app) {
             var isEditing = document.activeElement === input;
             var literalDisplay = !!raw && raw.charAt(0) === '#';
             var showFormulas = app.displayMode === 'formulas';
-            var displayValue = showFormulas ? (generatedBy ? '' : raw) : value;
+            var displayValue = showFormulas ? raw : value;
             if (attachment) {
               displayValue = String(
                 attachment.name ||
                   (attachment.pending ? 'Select file' : 'Attached file'),
               );
-            }
-            if (showFormulas && generatedBy && !attachment) {
-              displayValue = '';
             }
             if (String(displayValue || '').indexOf('#AI_ERROR:') === 0) {
               displayValue =

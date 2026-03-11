@@ -9,6 +9,7 @@ import {
 } from './server/compute';
 import {
   hydrateWorkbookAttachmentArtifacts,
+  getArtifactText,
   stripWorkbookAttachmentInlineData,
 } from '../artifacts/index.js';
 import { decodeStorageMap } from './storage-codec';
@@ -26,9 +27,15 @@ import {
 } from '../ai/index.js';
 import {
   extractChannelMentionLabels,
+  formatChannelEventForPrompt,
+  getChannelAttachmentLinkEntries,
   normalizeChannelLabel,
 } from '../channels/mentioning.js';
 import { getActiveChannelPayloadMap } from '../channels/runtime-state.js';
+import {
+  buildChannelAttachmentPath,
+  ChannelEvents,
+} from '../channels/events.js';
 import { FormulaEngine } from '../../engine/formula-engine.js';
 import { AIService } from '../../ui/metacell/runtime/ai-service.js';
 import { StorageService } from '../../engine/storage-service.js';
@@ -48,6 +55,87 @@ const isPlainObject = Match.Where((value) => {
   }
   return true;
 });
+
+function startOfToday() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+function escapeRegex(value) {
+  return String(value == null ? '' : value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripChannelMentionsFromPrompt(text) {
+  return String(text == null ? '' : text)
+    .replace(/(^|[^A-Za-z0-9_:/])\/([A-Za-z][A-Za-z0-9_-]*)\b/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function buildChannelFeedWindowStart(days) {
+  const totalDays = Math.max(1, parseInt(days, 10) || 1);
+  if (totalDays <= 1) return startOfToday();
+  const now = new Date();
+  return new Date(now.getTime() - (totalDays - 1) * 24 * 60 * 60 * 1000);
+}
+
+async function hydrateChannelEventForPrompt(doc) {
+  const eventDoc = doc && typeof doc === 'object' ? doc : null;
+  if (!eventDoc) return null;
+
+  const attachments = Array.isArray(eventDoc.attachments)
+    ? await Promise.all(
+        eventDoc.attachments.map(async (item, index) => {
+          const attachmentId = String(
+            item && (item.id || item.attachmentId)
+              ? item.id || item.attachmentId
+              : `legacy-${index}`,
+          );
+          const content =
+            item && item.contentArtifactId
+              ? await getArtifactText(String(item.contentArtifactId || ''))
+              : String((item && item.content) || '');
+          return {
+            ...(item && typeof item === 'object' ? item : {}),
+            id: attachmentId,
+            downloadUrl: buildChannelAttachmentPath(
+              eventDoc._id || '',
+              attachmentId,
+            ),
+            content: content,
+          };
+        }),
+      )
+    : [];
+
+  return {
+    ...eventDoc,
+    _id: String(eventDoc._id || ''),
+    eventId: String(eventDoc._id || ''),
+    label: String(eventDoc.label || ''),
+    attachments,
+  };
+}
+
+async function loadChannelEventsForWindow(label, days, afterCreatedAt) {
+  const target = normalizeChannelLabel(label);
+  if (!target) return [];
+
+  const selector = {
+    label: new RegExp(`^${escapeRegex(target)}$`, 'i'),
+    createdAt: {
+      $gte: buildChannelFeedWindowStart(days),
+    },
+  };
+  if (afterCreatedAt instanceof Date) {
+    selector.createdAt.$gt = afterCreatedAt;
+  }
+
+  const docs = await ChannelEvents.find(selector, {
+    sort: { createdAt: 1, _id: 1 },
+  }).fetchAsync();
+  return Promise.all(docs.map((doc) => hydrateChannelEventForPrompt(doc)));
+}
 
 async function normalizeSheetDocument(sheetId) {
   const sheetDocument = await Sheets.findOneAsync(
@@ -362,7 +450,16 @@ function mergeWorkbookForCompute(persistedWorkbookValue, clientWorkbookValue) {
         mergedCells[cellId] && typeof mergedCells[cellId] === 'object'
           ? mergedCells[cellId]
           : null;
-      if (!mergedCell) return;
+      if (!mergedCell) {
+        if (
+          persistedCell &&
+          String(persistedCell.generatedBy || '') &&
+          !clientCell
+        ) {
+          mergedCells[cellId] = JSON.parse(JSON.stringify(persistedCell));
+        }
+        return;
+      }
 
       const sourceMatches =
         persistedCell &&
@@ -440,6 +537,7 @@ function collectChannelBatchTasks(
   workbook,
   channelLabel,
   channelPayloads,
+  options = {},
 ) {
   const adapter = new WorkbookStorageAdapter(workbook);
   const storageService = new StorageService(adapter);
@@ -454,6 +552,7 @@ function collectChannelBatchTasks(
     [],
   );
   const target = normalizeChannelLabel(channelLabel);
+  const historyOnly = !!(options && options.historyOnly);
   const tasks = [];
   const sheets =
     workbook && workbook.sheets && typeof workbook.sheets === 'object'
@@ -470,8 +569,17 @@ function collectChannelBatchTasks(
         cells[cellId] && typeof cells[cellId] === 'object' ? cells[cellId] : {};
       const source = String(cell.source || '');
       if (!source) return;
-      const formulaKind =
-        source.charAt(0) === "'"
+      const channelFeedSpec =
+        source.charAt(0) === '#'
+          ? formulaEngine.parseChannelFeedPromptSpec(source)
+          : null;
+      const listSpec =
+        source.charAt(0) === '>'
+          ? formulaEngine.parseListShortcutSpec(source)
+          : null;
+      const formulaKind = channelFeedSpec
+        ? 'channel-feed'
+        : source.charAt(0) === "'"
           ? 'ask'
           : source.charAt(0) === '>'
             ? 'list'
@@ -479,17 +587,40 @@ function collectChannelBatchTasks(
               ? 'table'
               : '';
       if (!formulaKind) return;
+      if (historyOnly && formulaKind !== 'channel-feed') return;
+      if (
+        formulaKind === 'channel-feed' &&
+        normalizeChannelLabel(
+          channelFeedSpec &&
+            Array.isArray(channelFeedSpec.labels) &&
+            channelFeedSpec.labels.length
+            ? channelFeedSpec.labels[0]
+            : '',
+        ) !== target
+      ) {
+        return;
+      }
       if (extractChannelMentionLabels(source).indexOf(target) === -1) return;
 
       let promptTemplate = '';
       let count = null;
       let colsLimit = null;
       let rowsLimit = null;
+      let days = null;
+      let includeAttachments = false;
       if (formulaKind === 'ask') {
         promptTemplate = source.substring(1).trim();
       } else if (formulaKind === 'list') {
-        promptTemplate = formulaEngine.parseListShortcutPrompt(source);
+        promptTemplate = listSpec && listSpec.prompt ? listSpec.prompt : '';
         count = 5;
+        includeAttachments = !!(listSpec && listSpec.includeAttachments);
+      } else if (formulaKind === 'channel-feed') {
+        promptTemplate =
+          channelFeedSpec && channelFeedSpec.prompt ? channelFeedSpec.prompt : '';
+        days = channelFeedSpec && channelFeedSpec.days ? channelFeedSpec.days : 1;
+        includeAttachments = !!(
+          channelFeedSpec && channelFeedSpec.includeAttachments
+        );
       } else if (formulaKind === 'table') {
         const spec = formulaEngine.parseTablePromptSpec(source);
         promptTemplate = spec && spec.prompt ? spec.prompt : '';
@@ -502,7 +633,7 @@ function collectChannelBatchTasks(
         sheetId,
         promptTemplate,
         {},
-        { channelPayloads },
+        { channelPayloads, includeChannelAttachments: includeAttachments },
       );
       tasks.push({
         jobId: `${sheetId}:${String(cellId || '').toUpperCase()}:${formulaKind}`,
@@ -518,6 +649,8 @@ function collectChannelBatchTasks(
         count,
         colsLimit,
         rowsLimit,
+        days,
+        includeAttachments,
       });
     });
   });
@@ -530,65 +663,19 @@ async function runChannelBatchForWorkbook({
   workbook,
   channelLabel,
   channelPayloads,
+  historyOnly = false,
 }) {
   const collected = collectChannelBatchTasks(
     sheetDocumentId,
     workbook,
     channelLabel,
     channelPayloads,
+    { historyOnly },
   );
   const tasks = collected.tasks;
   if (!tasks.length) return workbook;
 
-  const messages = [];
-  const uniqueSystemPrompts = tasks
-    .map((task) => String(task.systemPrompt || '').trim())
-    .filter(Boolean)
-    .filter((value, index, array) => array.indexOf(value) === index);
-  if (uniqueSystemPrompts.length) {
-    messages.push({
-      role: 'system',
-      content: uniqueSystemPrompts.join('\n\n'),
-    });
-  }
-  messages.push({ role: 'system', content: buildChannelBatchSystemPrompt() });
-  messages.push({
-    role: 'user',
-    content: JSON.stringify(
-      tasks.map((task) => ({
-        jobId: task.jobId,
-        formulaKind: task.formulaKind,
-        prompt: task.prompt,
-        count: task.count,
-        colsLimit: task.colsLimit,
-        rowsLimit: task.rowsLimit,
-      })),
-    ),
-  });
-
   const target = normalizeChannelLabel(channelLabel);
-  const responseText = await enqueueAIChatRequest(
-    messages,
-    {
-      sheetDocumentId,
-      activeSheetId: '',
-      sourceCellId: `channel-batch:${target}`,
-      formulaKind: 'channel-batch',
-      queueIdentity: `${sheetDocumentId}:channel-batch:${target}`,
-      dependencies: [{ kind: 'channel', label: target }],
-    },
-    { timeoutMs: 180000 },
-  );
-
-  const parsed = parseBatchAIResponse(responseText);
-  const byJobId = {};
-  (Array.isArray(parsed) ? parsed : []).forEach((item) => {
-    if (!item || typeof item !== 'object') return;
-    const jobId = String(item.jobId || '');
-    if (!jobId) return;
-    byJobId[jobId] = item;
-  });
-
   const storageService = collected.storageService;
   const formulaEngine = collected.formulaEngine;
   const currentPayload =
@@ -597,81 +684,289 @@ async function runChannelBatchForWorkbook({
     currentPayload && (currentPayload.eventId || currentPayload._id)
       ? String(currentPayload.eventId || currentPayload._id)
       : '';
+  const batchedTasks = tasks.filter((task) => task.formulaKind !== 'channel-feed');
+  const feedTasks = tasks.filter((task) => task.formulaKind === 'channel-feed');
 
-  tasks.forEach((task) => {
-    const item = byJobId[task.jobId];
-    if (!item) return;
-    const previousProcessed =
-      storageService.getCellProcessedChannelEventIds(
-        task.sheetId,
-        task.cellId,
-      ) || {};
-    const shouldAppend = !!(
-      previousProcessed[target] &&
-      currentEventId &&
-      previousProcessed[target] !== currentEventId
+  if (batchedTasks.length) {
+    const messages = [];
+    const uniqueSystemPrompts = batchedTasks
+    .map((task) => String(task.systemPrompt || '').trim())
+    .filter(Boolean)
+    .filter((value, index, array) => array.indexOf(value) === index);
+    if (uniqueSystemPrompts.length) {
+      messages.push({
+        role: 'system',
+        content: uniqueSystemPrompts.join('\n\n'),
+      });
+    }
+    messages.push({ role: 'system', content: buildChannelBatchSystemPrompt() });
+    messages.push({
+      role: 'user',
+      content: JSON.stringify(
+        batchedTasks.map((task) => ({
+          jobId: task.jobId,
+          formulaKind: task.formulaKind,
+          prompt: task.prompt,
+          count: task.count,
+          colsLimit: task.colsLimit,
+          rowsLimit: task.rowsLimit,
+        })),
+      ),
+    });
+
+    const responseText = await enqueueAIChatRequest(
+      messages,
+      {
+        sheetDocumentId,
+        activeSheetId: '',
+        sourceCellId: `channel-batch:${target}`,
+        formulaKind: 'channel-batch',
+        queueIdentity: `${sheetDocumentId}:channel-batch:${target}`,
+        dependencies: [{ kind: 'channel', label: target }],
+      },
+      { timeoutMs: 180000 },
     );
 
-    if (task.formulaKind === 'ask') {
-      let value = String(item.value == null ? '' : item.value);
-      const markdown = buildAttachmentLinksMarkdown(task.attachmentLinks);
-      if (markdown) {
-        value = value ? `${value}\n\n${markdown}` : markdown;
-      }
-      storageService.setComputedCellValue(
-        task.sheetId,
-        task.cellId,
-        value,
-        'resolved',
-        '',
+    const parsed = parseBatchAIResponse(responseText);
+    const byJobId = {};
+    (Array.isArray(parsed) ? parsed : []).forEach((item) => {
+      if (!item || typeof item !== 'object') return;
+      const jobId = String(item.jobId || '');
+      if (!jobId) return;
+      byJobId[jobId] = item;
+    });
+
+    batchedTasks.forEach((task) => {
+      const item = byJobId[task.jobId];
+      if (!item) return;
+      const previousProcessed =
+        storageService.getCellProcessedChannelEventIds(
+          task.sheetId,
+          task.cellId,
+        ) || {};
+      const shouldAppend = !!(
+        previousProcessed[target] &&
+        currentEventId &&
+        previousProcessed[target] !== currentEventId
       );
-    } else if (task.formulaKind === 'list') {
-      const values = Array.isArray(item.items)
-        ? item.items
-            .map((entry) => String(entry == null ? '' : entry))
-            .filter((entry) => entry.trim() !== '')
-        : [];
-      if (!shouldAppend) {
-        storageService.clearGeneratedCellsBySource(task.sheetId, task.cellId);
-        formulaEngine.fillUnderneathCells(task.sheetId, task.cellId, values, 0);
-      } else {
-        const source = formulaEngine.parseCellId(task.cellId);
-        const existing =
-          storageService.listGeneratedCellsBySource(
+
+      if (task.formulaKind === 'ask') {
+        let value = String(item.value == null ? '' : item.value);
+        const markdown = buildAttachmentLinksMarkdown(task.attachmentLinks);
+        if (markdown) {
+          value = value ? `${value}\n\n${markdown}` : markdown;
+        }
+        storageService.setComputedCellValue(
+          task.sheetId,
+          task.cellId,
+          value,
+          'resolved',
+          '',
+        );
+      } else if (task.formulaKind === 'list') {
+        const values = Array.isArray(item.items)
+          ? item.items
+              .map((entry) => String(entry == null ? '' : entry))
+              .filter((entry) => entry.trim() !== '')
+          : [];
+        if (!shouldAppend) {
+          storageService.clearGeneratedCellsBySource(task.sheetId, task.cellId);
+          formulaEngine.fillUnderneathCells(
             task.sheetId,
             task.cellId,
-          ) || [];
-        let maxRow = source ? source.row : 0;
-        existing.forEach((cellId) => {
-          const parsedCell = formulaEngine.parseCellId(cellId);
-          if (parsedCell && parsedCell.row > maxRow) maxRow = parsedCell.row;
-        });
-        const colLabel = source
-          ? formulaEngine.columnIndexToLabel(source.col)
-          : 'A';
-        for (let i = 0; i < values.length; i += 1) {
-          const targetCellId = `${colLabel}${maxRow + i + 1}`;
-          storageService.setCellValue(task.sheetId, targetCellId, values[i], {
-            generatedBy: task.cellId,
+            values,
+            0,
+          );
+        } else {
+          const source = formulaEngine.parseCellId(task.cellId);
+          const existing =
+            storageService.listGeneratedCellsBySource(
+              task.sheetId,
+              task.cellId,
+            ) || [];
+          let maxRow = source ? source.row : 0;
+          existing.forEach((cellId) => {
+            const parsedCell = formulaEngine.parseCellId(cellId);
+            if (parsedCell && parsedCell.row > maxRow) maxRow = parsedCell.row;
           });
+          const colLabel = source
+            ? formulaEngine.columnIndexToLabel(source.col)
+            : 'A';
+          for (let i = 0; i < values.length; i += 1) {
+            const targetCellId = `${colLabel}${maxRow + i + 1}`;
+            storageService.setCellValue(task.sheetId, targetCellId, values[i], {
+              generatedBy: task.cellId,
+            });
+          }
         }
+      } else if (task.formulaKind === 'table') {
+        const rows = Array.isArray(item.rows) ? item.rows : [];
+        formulaEngine.spillMatrixToSheet(task.sheetId, task.cellId, rows, {
+          preserveSourceCell: true,
+          appendBelowExisting: shouldAppend,
+        });
       }
-    } else if (task.formulaKind === 'table') {
-      const rows = Array.isArray(item.rows) ? item.rows : [];
-      formulaEngine.spillMatrixToSheet(task.sheetId, task.cellId, rows, {
-        preserveSourceCell: true,
-        appendBelowExisting: shouldAppend,
+
+      storageService.setCellRuntimeState(task.sheetId, task.cellId, {
+        state: 'resolved',
+        error: '',
+        lastProcessedChannelEventIds: currentEventId
+          ? { [target]: currentEventId }
+          : {},
+      });
+    });
+  }
+
+  for (let index = 0; index < feedTasks.length; index += 1) {
+    const task = feedTasks[index];
+    const previousProcessed =
+      storageService.getCellProcessedChannelEventIds(task.sheetId, task.cellId) ||
+      {};
+    const previousEventId = String(previousProcessed[target] || '');
+    let previousCreatedAt = null;
+    if (previousEventId) {
+      const previousDoc = await ChannelEvents.findOneAsync(
+        { _id: previousEventId },
+        { fields: { createdAt: 1 } },
+      );
+      if (previousDoc && previousDoc.createdAt instanceof Date) {
+        previousCreatedAt = previousDoc.createdAt;
+      }
+    }
+
+    const shouldAppend = !!previousCreatedAt;
+    const eventDocs = await loadChannelEventsForWindow(
+      target,
+      task.days,
+      shouldAppend ? previousCreatedAt : null,
+    );
+    console.log('[channel-feed] task.start', {
+      sheetDocumentId,
+      channelLabel: target,
+      sheetId: task.sheetId,
+      cellId: task.cellId,
+      days: task.days,
+      shouldAppend,
+      events: eventDocs.length,
+    });
+    const values = [];
+    let latestProcessedEventId = previousEventId;
+
+    for (let eventIndex = 0; eventIndex < eventDocs.length; eventIndex += 1) {
+      const eventPayload = eventDocs[eventIndex];
+      if (!eventPayload) continue;
+      const taskPrompt = stripChannelMentionsFromPrompt(task.promptTemplate);
+      if (!taskPrompt) continue;
+      const prepared = formulaEngine.prepareAIPrompt(
+        task.sheetId,
+        taskPrompt,
+        {},
+        { includeChannelAttachments: !!task.includeAttachments },
+      );
+      const eventText = formatChannelEventForPrompt(eventPayload, {
+        includeAttachments: !!task.includeAttachments,
+      });
+      const finalPrompt = [
+        `Task: ${prepared.userPrompt || taskPrompt}`,
+        '',
+        'Channel event:',
+        eventText,
+      ]
+        .filter((part) => String(part || '').trim() !== '')
+        .join('\n')
+        .trim();
+      if (!finalPrompt) continue;
+      const responseText = await enqueueAIChatRequest(
+        [
+          ...(prepared.systemPrompt
+            ? [{ role: 'system', content: String(prepared.systemPrompt) }]
+            : []),
+          {
+            role: 'user',
+            content: finalPrompt,
+          },
+        ],
+        {
+          sheetDocumentId,
+          activeSheetId: task.sheetId,
+          sourceCellId: task.cellId,
+          formulaKind: 'channel-feed',
+          queueIdentity: `${sheetDocumentId}:channel-feed:${task.sheetId}:${task.cellId}:${String(eventPayload._id || '')}`,
+          dependencies: [{ kind: 'channel', label: target }],
+        },
+        { timeoutMs: 180000 },
+      );
+      const markdown = buildAttachmentLinksMarkdown(
+        getChannelAttachmentLinkEntries(eventPayload, {
+          includeAttachments: !!task.includeAttachments,
+        }),
+      );
+      const value = markdown
+        ? `${String(responseText || '').trim()}\n\n${markdown}`.trim()
+        : String(responseText || '').trim();
+      if (!value) continue;
+      values.push(value);
+      console.log('[channel-feed] task.value', {
+        sheetDocumentId,
+        sheetId: task.sheetId,
+        cellId: task.cellId,
+        eventId: String(eventPayload.eventId || eventPayload._id || ''),
+        preview: value.slice(0, 160),
+      });
+      latestProcessedEventId = String(
+        eventPayload.eventId || eventPayload._id || latestProcessedEventId || '',
+      );
+    }
+
+    if (!shouldAppend) {
+      storageService.clearGeneratedCellsBySource(task.sheetId, task.cellId);
+      formulaEngine.fillUnderneathCells(task.sheetId, task.cellId, values, 0);
+      console.log('[channel-feed] task.write.replace', {
+        sheetDocumentId,
+        sheetId: task.sheetId,
+        cellId: task.cellId,
+        rows: values.length,
+        generated: storageService.listGeneratedCellsBySource(
+          task.sheetId,
+          task.cellId,
+        ),
+      });
+    } else if (values.length) {
+      const source = formulaEngine.parseCellId(task.cellId);
+      const existing =
+        storageService.listGeneratedCellsBySource(task.sheetId, task.cellId) ||
+        [];
+      let maxRow = source ? source.row : 0;
+      existing.forEach((cellId) => {
+        const parsedCell = formulaEngine.parseCellId(cellId);
+        if (parsedCell && parsedCell.row > maxRow) maxRow = parsedCell.row;
+      });
+      const colLabel = source ? formulaEngine.columnIndexToLabel(source.col) : 'A';
+      const writtenIds = [];
+      for (let i = 0; i < values.length; i += 1) {
+        const targetCellId = `${colLabel}${maxRow + i + 1}`;
+        storageService.setCellValue(task.sheetId, targetCellId, values[i], {
+          generatedBy: task.cellId,
+        });
+        writtenIds.push(targetCellId);
+      }
+      console.log('[channel-feed] task.write.append', {
+        sheetDocumentId,
+        sheetId: task.sheetId,
+        cellId: task.cellId,
+        rows: values.length,
+        writtenIds,
       });
     }
 
     storageService.setCellRuntimeState(task.sheetId, task.cellId, {
       state: 'resolved',
       error: '',
-      lastProcessedChannelEventIds: currentEventId
-        ? { [target]: currentEventId }
+      lastProcessedChannelEventIds: latestProcessedEventId
+        ? { [target]: latestProcessedEventId }
         : {},
     });
-  });
+  }
 
   return storageService.storage &&
     typeof storageService.storage.snapshot === 'function'
@@ -1004,6 +1299,60 @@ if (Meteor.isServer) {
             profiler.step('persist.done', { changes: changes.length });
         },
       });
+      const nextWorkbookAfterChannelHistory =
+        result && result.workbook
+          ? await (async () => {
+              const mentionedLabels = [
+                ...new Set(
+                  Object.values(
+                    (
+                      decodeWorkbookDocument(result.workbook || {}).sheets || {}
+                    ),
+                  )
+                    .flatMap((sheet) =>
+                      Object.values((sheet && sheet.cells) || {}).flatMap(
+                        (cell) =>
+                          extractChannelMentionLabels(
+                            String((cell && cell.source) || ''),
+                          ),
+                      ),
+                    )
+                    .map((label) => normalizeChannelLabel(label))
+                    .filter(Boolean),
+                ),
+              ];
+              let nextWorkbook = result.workbook;
+              for (let i = 0; i < mentionedLabels.length; i += 1) {
+                nextWorkbook = await runChannelBatchForWorkbook({
+                  sheetDocumentId: sheetId,
+                  workbook: nextWorkbook,
+                  channelLabel: mentionedLabels[i],
+                  channelPayloads,
+                  historyOnly: true,
+                });
+              }
+              return nextWorkbook;
+            })()
+          : result && result.workbook;
+      if (nextWorkbookAfterChannelHistory && result) {
+        result.workbook = nextWorkbookAfterChannelHistory;
+        await Sheets.updateAsync(
+          { _id: sheetId },
+          {
+            $set: {
+              workbook: encodeWorkbookForDocument(
+                stripWorkbookAttachmentInlineData(
+                  decodeWorkbookDocument(nextWorkbookAfterChannelHistory),
+                ),
+              ),
+              updatedAt: new Date(),
+            },
+            $unset: {
+              storage: '',
+            },
+          },
+        );
+      }
       if (profiler)
         profiler.step('compute.done', {
           values:

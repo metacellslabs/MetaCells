@@ -93,7 +93,7 @@ function stripUnsupportedImageParts(messages) {
               return String(part.text == null ? '' : part.text);
             return '';
           })
-          .join('')
+          .join('\n\n')
           .trim();
         return {
           role: source.role,
@@ -490,6 +490,10 @@ async function refreshTaskFromSheetState(task, reason) {
     return;
   }
 
+  if (String(task.queueMeta.formulaKind || '') === 'channel-feed') {
+    return;
+  }
+
   const rebuilt = await buildQueuedPayload(task.queueMeta);
   if (
     !rebuilt ||
@@ -698,7 +702,10 @@ async function runAIChatJob(job) {
     return deferJobExecution(500, 'blocked by edit lock');
   }
 
-  if (task.queueMeta) {
+  if (
+    task.queueMeta &&
+    String(task.queueMeta.formulaKind || '') !== 'channel-feed'
+  ) {
     const rebuilt = await buildQueuedPayload(task.queueMeta);
     if (rebuilt && Array.isArray(rebuilt.messages) && rebuilt.messages.length) {
       task.payload = {

@@ -8,7 +8,7 @@ import {
 
 // Description: ai methods extracted from FormulaEngine for smaller logical modules.
 export const aiMethods = {
-  getImageAttachmentForCell(sheetId, cellId, options) {
+  getAttachmentForCell(sheetId, cellId, options) {
     var targetSheetId = String(sheetId || '');
     var targetCellId = String(cellId || '').toUpperCase();
     if (
@@ -22,9 +22,6 @@ export const aiMethods = {
     );
     var attachment = this.parseAttachmentSource(raw);
     if (!attachment) return null;
-    var type = String(attachment.type || '').toLowerCase();
-    var previewUrl = String(attachment.previewUrl || '');
-    if (type.indexOf('image/') !== 0 || !previewUrl) return null;
     if (typeof this.recordDependencyAttachment === 'function') {
       this.recordDependencyAttachment(options, targetSheetId, targetCellId);
     }
@@ -33,8 +30,44 @@ export const aiMethods = {
       cellId: targetCellId,
       name: String(attachment.name || targetCellId),
       type: String(attachment.type || ''),
-      url: previewUrl,
+      binaryArtifactId: String(attachment.binaryArtifactId || ''),
+      url: String(attachment.previewUrl || ''),
+      downloadUrl: String(attachment.downloadUrl || ''),
+      previewUrl: String(attachment.previewUrl || ''),
+      content: this.resolveAttachmentContentOrThrow(
+        attachment,
+        targetSheetId,
+        targetCellId,
+      ),
     };
+  },
+
+  getImageAttachmentForCell(sheetId, cellId, options) {
+    var attachment = this.getAttachmentForCell(sheetId, cellId, options);
+    if (!attachment) return null;
+    var type = String(attachment.type || '').toLowerCase();
+    var previewUrl = String(
+      attachment.previewUrl || attachment.downloadUrl || attachment.url || '',
+    );
+    if (type.indexOf('image/') !== 0 || !previewUrl) return null;
+    return {
+      sheetId: attachment.sheetId,
+      cellId: attachment.cellId,
+      name: String(attachment.name || attachment.cellId),
+      type: String(attachment.type || ''),
+      binaryArtifactId: String(attachment.binaryArtifactId || ''),
+      url: previewUrl,
+      downloadUrl: String(attachment.downloadUrl || previewUrl),
+    };
+  },
+
+  getTextAttachmentForCell(sheetId, cellId, options) {
+    var attachment = this.getAttachmentForCell(sheetId, cellId, options);
+    if (!attachment) return null;
+    var type = String(attachment.type || '').toLowerCase();
+    if (type.indexOf('image/') === 0) return null;
+    if (!String(attachment.content || '').trim()) return null;
+    return attachment;
   },
 
   resolveImageAttachmentMention(sheetId, token, options) {
@@ -77,6 +110,46 @@ export const aiMethods = {
     return null;
   },
 
+  resolveTextAttachmentMention(sheetId, token, options) {
+    var sourceSheetId = String(sheetId || '');
+    var rawToken = String(token || '').trim();
+    if (!rawToken) return null;
+
+    var sheetCellMatch =
+      /^(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!([A-Za-z]+[0-9]+)$/.exec(
+        rawToken,
+      );
+    if (sheetCellMatch) {
+      var sheetName = sheetCellMatch[1] || sheetCellMatch[2] || '';
+      var refSheetId = this.findSheetIdByName(sheetName);
+      if (!refSheetId) return null;
+      return this.getTextAttachmentForCell(
+        refSheetId,
+        sheetCellMatch[3],
+        options,
+      );
+    }
+
+    var localCellMatch = /^([A-Za-z]+[0-9]+)$/.exec(rawToken);
+    if (localCellMatch) {
+      return this.getTextAttachmentForCell(
+        sourceSheetId,
+        localCellMatch[1],
+        options,
+      );
+    }
+
+    var named = this.storageService.resolveNamedCell(rawToken);
+    if (named && named.sheetId && named.cellId) {
+      return this.getTextAttachmentForCell(
+        named.sheetId,
+        named.cellId,
+        options,
+      );
+    }
+    return null;
+  },
+
   appendAIPromptImageAttachment(options, attachment) {
     if (!attachment || !options || typeof options !== 'object') return;
     if (!options.aiImageAttachments) options.aiImageAttachments = [];
@@ -93,14 +166,50 @@ export const aiMethods = {
     list.push(attachment);
   },
 
-  buildAIUserContent(userPrompt, imageAttachments) {
+  appendAIPromptTextAttachment(options, attachment) {
+    if (!attachment || !options || typeof options !== 'object') return;
+    if (!options.aiTextAttachments) options.aiTextAttachments = [];
+    var list = options.aiTextAttachments;
+    var key = [attachment.sheetId, attachment.cellId, attachment.name].join(':');
+    for (var i = 0; i < list.length; i++) {
+      var existing = list[i];
+      if (!existing) continue;
+      var existingKey = [
+        existing.sheetId,
+        existing.cellId,
+        existing.name,
+      ].join(':');
+      if (existingKey === key) return;
+    }
+    list.push(attachment);
+  },
+
+  buildTextAttachmentUserContentPart(attachment) {
+    if (!attachment) return null;
+    var name = String(attachment.name || attachment.cellId || 'file').trim();
+    var content = String(attachment.content || '').trim();
+    if (!content) return null;
+    return {
+      type: 'text',
+      text: ['Attached file: ' + name, content].join('\n\n'),
+    };
+  },
+
+  buildAIUserContent(userPrompt, imageAttachments, textAttachments) {
     var text = String(userPrompt == null ? '' : userPrompt).trim();
+    var files = Array.isArray(textAttachments)
+      ? textAttachments.filter((item) => item && item.content)
+      : [];
     var images = Array.isArray(imageAttachments)
       ? imageAttachments.filter((item) => item && item.url)
       : [];
-    if (!images.length) return text;
+    if (!files.length && !images.length) return text;
     var parts = [];
     if (text) parts.push({ type: 'text', text: text });
+    for (var j = 0; j < files.length; j++) {
+      var textPart = this.buildTextAttachmentUserContentPart(files[j]);
+      if (textPart) parts.push(textPart);
+    }
     for (var i = 0; i < images.length; i++) {
       parts.push({
         type: 'image_url',
@@ -123,11 +232,21 @@ export const aiMethods = {
     return source;
   },
 
+  shouldIncludeChannelAttachments(options) {
+    return !!(
+      options &&
+      typeof options === 'object' &&
+      options.includeChannelAttachments === true
+    );
+  },
+
   getChannelMentionValue(label, options) {
     var key = normalizeChannelLabel(label);
     if (!key) return '';
     var map = this.getChannelPayloadMap(options);
-    return formatChannelEventForPrompt(map[key] || null);
+    return formatChannelEventForPrompt(map[key] || null, {
+      includeAttachments: this.shouldIncludeChannelAttachments(options),
+    });
   },
 
   buildChannelAttachmentSystemPrompt(labels, options) {
@@ -141,6 +260,9 @@ export const aiMethods = {
       seen[key] = true;
       var instruction = buildChannelAttachmentLinkSystemPrompt(
         map[key] || null,
+        {
+          includeAttachments: this.shouldIncludeChannelAttachments(options),
+        },
       );
       if (instruction) instructions.push(instruction);
     }
@@ -155,7 +277,9 @@ export const aiMethods = {
     for (var i = 0; i < source.length; i++) {
       var key = normalizeChannelLabel(source[i]);
       if (!key) continue;
-      var entries = getChannelAttachmentLinkEntries(map[key] || null);
+      var entries = getChannelAttachmentLinkEntries(map[key] || null, {
+        includeAttachments: this.shouldIncludeChannelAttachments(options),
+      });
       for (var j = 0; j < entries.length; j++) {
         var item = entries[j];
         var dedupeKey = String(item.name || '') + '::' + String(item.url || '');
@@ -417,6 +541,7 @@ export const aiMethods = {
         try {
           var resolved = '';
           var imageAttachment = null;
+          var textAttachment = null;
           if (rangeStart && rangeEnd) {
             var rangeSheetName = qSheetRange || pSheetRange || '';
             var rangeSheetId = this.findSheetIdByName(rangeSheetName);
@@ -447,6 +572,13 @@ export const aiMethods = {
                 sheetCellId.toUpperCase(),
                 options,
               );
+              if (!imageAttachment) {
+                textAttachment = this.getTextAttachmentForCell(
+                  refSheetId,
+                  sheetCellId.toUpperCase(),
+                  options,
+                );
+              }
             }
             resolved = rawMode
               ? this.getMentionRawValue(refSheetId, sheetCellId.toUpperCase())
@@ -463,6 +595,13 @@ export const aiMethods = {
                 plainToken,
                 options,
               );
+              if (!imageAttachment) {
+                textAttachment = this.resolveTextAttachmentMention(
+                  sheetId,
+                  plainToken,
+                  options,
+                );
+              }
             }
             resolved = this.getPlainMentionValue(
               sheetId,
@@ -479,6 +618,14 @@ export const aiMethods = {
               String(
                 imageAttachment.name || imageAttachment.cellId || 'image',
               ) +
+              '>'
+            );
+          }
+          if (textAttachment) {
+            this.appendAIPromptTextAttachment(options, textAttachment);
+            return (
+              '<attached file: ' +
+              String(textAttachment.name || textAttachment.cellId || 'file') +
               '>'
             );
           }
@@ -573,13 +720,64 @@ export const aiMethods = {
     );
   },
 
-  parseListShortcutPrompt(rawFormula) {
+  parseListShortcutSpec(rawFormula) {
     var raw = String(rawFormula == null ? '' : rawFormula);
-    if (!raw || raw.charAt(0) !== '>') return '';
+    if (!raw || raw.charAt(0) !== '>') return null;
 
     var body = raw.substring(1).trim();
-    if (!body) return '';
-    return body;
+    if (!body) return null;
+
+    var includeAttachments = false;
+    var days = 1;
+    var prompt = body;
+    var attachmentOptIn = /^\+(\d+)?\s*(.+)$/.exec(body);
+    if (attachmentOptIn) {
+      includeAttachments = true;
+      days = attachmentOptIn[1] ? parseInt(attachmentOptIn[1], 10) : 1;
+      if (isNaN(days) || days < 1) days = 1;
+      prompt = String(attachmentOptIn[2] || '').trim();
+    }
+
+    if (!prompt) return null;
+    return {
+      prompt: prompt,
+      includeAttachments: includeAttachments,
+      days: days,
+    };
+  },
+
+  parseListShortcutPrompt(rawFormula) {
+    var spec = this.parseListShortcutSpec(rawFormula);
+    return spec && spec.prompt ? spec.prompt : '';
+  },
+
+  parseChannelFeedPromptSpec(rawValue) {
+    var raw = String(rawValue == null ? '' : rawValue);
+    if (!raw || raw.charAt(0) !== '#') return null;
+
+    var payload = raw.substring(1).trim();
+    if (!payload) return null;
+
+    var match = /^(\+)?(\d+)?\s*(.+)$/.exec(payload);
+    if (!match) return null;
+
+    var includeAttachments = match[1] === '+';
+    var dayToken = String(match[2] || '').trim();
+    var prompt = String(match[3] || '').trim();
+    if (!prompt) return null;
+
+    var labels = extractChannelMentionLabels(prompt);
+    if (!labels.length) return null;
+
+    var days = dayToken ? parseInt(dayToken, 10) : 1;
+    if (isNaN(days) || days < 1) return null;
+
+    return {
+      prompt: prompt,
+      days: days,
+      labels: labels,
+      includeAttachments: includeAttachments,
+    };
   },
 
   parseTablePromptSpec(rawValue) {
@@ -1106,6 +1304,10 @@ export const aiMethods = {
       mentionOptions && Array.isArray(mentionOptions.aiImageAttachments)
         ? mentionOptions.aiImageAttachments.slice()
         : [];
+    var textAttachments =
+      mentionOptions && Array.isArray(mentionOptions.aiTextAttachments)
+        ? mentionOptions.aiTextAttachments.slice()
+        : [];
     var systemPrompt = '';
     if (contextLines.length) {
       systemPrompt = 'Spreadsheet context:\n' + contextLines.join('\n');
@@ -1127,7 +1329,12 @@ export const aiMethods = {
       userPrompt: userPrompt,
       systemPrompt: systemPrompt,
       imageAttachments: imageAttachments,
-      userContent: this.buildAIUserContent(userPrompt, imageAttachments),
+      textAttachments: textAttachments,
+      userContent: this.buildAIUserContent(
+        userPrompt,
+        imageAttachments,
+        textAttachments,
+      ),
       attachmentLinks: attachmentLinks,
     };
   },

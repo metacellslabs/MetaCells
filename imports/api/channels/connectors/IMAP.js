@@ -5,7 +5,7 @@ export default defineChannelConnector({
   type: 'imap',
   name: 'Email (IMAP + SMTP)',
   description:
-    'Receive mailbox events over IMAP and send outbound mail over SMTP from the same channel.',
+    'Read mailbox events over IMAP and send outbound email over SMTP from the same configured mailbox.',
   packageName: 'imapflow + nodemailer',
   supportsReceive: true,
   supportsSend: true,
@@ -104,11 +104,13 @@ export default defineChannelConnector({
   sendParams: ['to', 'subj', 'body', 'attachments'],
   mentioningFormulas: [
     '>summarize /sf in one sentence',
-    '/channel1:send:message',
-    '/sf:send:message',
+    '/sf:send:{"to":"user@example.com","subj":"Hi","body":"hello"}',
+    '/sf:send:{"to":["a@example.com","b@example.com"],"subj":"Report","body":"see attached @policy"}',
   ],
   help: [
     'Use /sf in formulas to bind logic to the latest received email event and message payload.',
-    'Use /sf:send:message with to/subj/body/attachments to send outbound mail through the same configured channel.',
+    'Use `/sf:send:{"to":"user@example.com","subj":"Hi","body":"hello"}` to send outbound mail through the same configured channel.',
+    'Plain `/sf hello` is for channel mentions in formulas, not SMTP sends. Email sends require at least `to` and usually `subj` + `body`.',
+    'If the body references workbook attachment cells, the matching files are attached to the outbound email.',
   ],
 });
