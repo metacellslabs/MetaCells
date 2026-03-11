@@ -2218,7 +2218,7 @@ td.has-error::after {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  z-index: 21;
+  z-index: 80;
   transition: opacity 120ms ease;
   transition-delay: 0s;
 }
@@ -2228,6 +2228,11 @@ td.has-error:focus-within::after {
   opacity: 1;
   visibility: visible;
   transition-delay: 0.35s;
+}
+
+tr:nth-child(-n + 5) td.has-error::after {
+  top: calc(100% + 6px);
+  bottom: auto;
 }
 
 td.has-attachment .cell-output {
@@ -2869,30 +2874,79 @@ body.report-active .report-wrap {
   overflow: auto;
 }
 
+body.report-active .formula-bar-row-format {
+  display: none;
+}
+
 .report-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
-  padding-bottom: 2px;
+  padding-bottom: 4px;
 }
 
 .report-mode,
 .report-cmd,
 .report-action {
-  height: 32px;
-  border: 1px solid var(--border-strong);
-  background: var(--panel-muted);
-  border-radius: var(--radius-sm);
-  padding: 0 10px;
+  height: 34px;
+  border: 1px solid rgba(199, 213, 207, 0.95);
+  background: #ffffff;
+  border-radius: 10px;
+  padding: 0 11px;
   font-weight: 600;
   font-size: 13px;
+  color: var(--text);
+  box-shadow: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
 }
 
 .report-mode.active {
   background: var(--accent-soft);
   border-color: #8ebda9;
   color: var(--accent-strong);
+}
+
+.report-mode:hover,
+.report-cmd:hover,
+.report-action:hover {
+  background: #f5f8f7;
+  border-color: #b7c8c2;
+}
+
+.report-cmd {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  border-radius: 8px;
+  color: #52635d;
+}
+
+.report-cmd svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.report-cmd:hover {
+  background: rgba(82, 99, 93, 0.08);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.report-cmd:focus-visible {
+  outline: 2px solid rgba(50, 113, 233, 0.22);
+  outline-offset: 1px;
 }
 
 .report-hint {
@@ -3201,7 +3255,7 @@ body.report-active .report-wrap {
 
 @media (max-width: 900px) {
   :root {
-    --toolbar-offset: 250px;
+    --toolbar-offset: 282px;
   }
 
   body {
@@ -3420,6 +3474,16 @@ body.report-active .report-wrap {
   .formula-bar .help-button {
     grid-area: help;
     justify-self: end;
+  }
+
+  body.route-sheet {
+    padding: var(--toolbar-offset) 0 0;
+  }
+
+  body.route-sheet .formula-bar {
+    left: 0;
+    right: 0;
+    top: 0;
   }
 }
 

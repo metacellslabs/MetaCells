@@ -2464,21 +2464,58 @@ function SheetPage({
           >
             PDF
           </button>
-          <button type="button" className="report-cmd" data-cmd="bold">
-            <b>B</b>
+          <button
+            type="button"
+            className="report-cmd"
+            data-cmd="bold"
+            aria-label="Bold"
+            title="Bold"
+          >
+            <LucideIcon size={16}>
+              <path d="M8 6h5a3 3 0 0 1 0 6H8z" />
+              <path d="M8 12h6a3 3 0 0 1 0 6H8z" />
+            </LucideIcon>
           </button>
-          <button type="button" className="report-cmd" data-cmd="italic">
-            <i>I</i>
+          <button
+            type="button"
+            className="report-cmd"
+            data-cmd="italic"
+            aria-label="Italic"
+            title="Italic"
+          >
+            <LucideIcon size={16}>
+              <path d="M14 6h-4" />
+              <path d="M14 18h-4" />
+              <path d="M14 6 10 18" />
+            </LucideIcon>
           </button>
-          <button type="button" className="report-cmd" data-cmd="underline">
-            <u>U</u>
+          <button
+            type="button"
+            className="report-cmd"
+            data-cmd="underline"
+            aria-label="Underline"
+            title="Underline"
+          >
+            <LucideIcon size={16}>
+              <path d="M7 5v6a5 5 0 0 0 10 0V5" />
+              <path d="M5 19h14" />
+            </LucideIcon>
           </button>
           <button
             type="button"
             className="report-cmd"
             data-cmd="insertUnorderedList"
+            aria-label="Bullet list"
+            title="Bullet list"
           >
-            • List
+            <LucideIcon size={16}>
+              <path d="M9 6h11" />
+              <path d="M9 12h11" />
+              <path d="M9 18h11" />
+              <circle cx="4" cy="6" r="1" fill="currentColor" stroke="none" />
+              <circle cx="4" cy="12" r="1" fill="currentColor" stroke="none" />
+              <circle cx="4" cy="18" r="1" fill="currentColor" stroke="none" />
+            </LucideIcon>
           </button>
           <span className="report-hint">
             Mentions: <code>Sheet 1:A1</code>, <code>@named_cell</code>, region{' '}
