@@ -5,20 +5,26 @@ function getAIModeIconMarkup(mode) {
   var normalized = String(mode || AI_MODE.manual);
   if (normalized === AI_MODE.auto) {
     return (
+      "<span class='toolbar-mode-icon'>" +
       "<svg viewBox='0 0 24 24' aria-hidden='true' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'>" +
       "<path d='M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3Z'></path>" +
       "<path d='M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14Z'></path>" +
       "<path d='M5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8L5 14Z'></path>" +
-      '</svg>'
+      '</svg>' +
+      '</span>' +
+      "<span class='toolbar-mode-label'>Automatic</span>"
     );
   }
   return (
+    "<span class='toolbar-mode-icon'>" +
     "<svg viewBox='0 0 24 24' aria-hidden='true' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'>" +
     "<path d='M9 11V5a3 3 0 0 1 6 0v6'></path>" +
     "<path d='M6 11h12'></path>" +
     "<path d='M8 11v4a4 4 0 0 0 8 0v-4'></path>" +
     "<path d='M12 19v2'></path>" +
-    '</svg>'
+    '</svg>' +
+    '</span>' +
+    "<span class='toolbar-mode-label'>Manual</span>"
   );
 }
 
@@ -26,18 +32,24 @@ function getDisplayModeIconMarkup(mode) {
   var normalized = String(mode || 'values');
   if (normalized === 'formulas') {
     return (
+      "<span class='toolbar-mode-icon'>" +
       "<svg viewBox='0 0 24 24' aria-hidden='true' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'>" +
       "<path d='M8 5h8'></path>" +
       "<path d='M8 19h8'></path>" +
       "<path d='M14 5 10 19'></path>" +
-      '</svg>'
+      '</svg>' +
+      '</span>' +
+      "<span class='toolbar-mode-label'>Formulas</span>"
     );
   }
   return (
+    "<span class='toolbar-mode-icon'>" +
     "<svg viewBox='0 0 24 24' aria-hidden='true' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'>" +
     "<path d='M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z'></path>" +
     "<circle cx='12' cy='12' r='2.5'></circle>" +
-    '</svg>'
+    '</svg>' +
+    '</span>' +
+    "<span class='toolbar-mode-label'>Values</span>"
   );
 }
 
@@ -1201,6 +1213,9 @@ export function syncCellFormatControl(app) {
 }
 
 export function syncCellPresentationControls(app) {
+  if (app && typeof app.syncRegionRecordingControls === 'function') {
+    app.syncRegionRecordingControls();
+  }
   var disabled = !app.activeInput || app.isReportActive();
   var presentation = disabled
     ? {

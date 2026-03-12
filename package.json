@@ -14,6 +14,8 @@
   "dependencies": {
     "@babel/runtime": "^7.23.5",
     "@swc/helpers": "^0.5.17",
+    "gif.js": "^0.2.0",
+    "html2canvas": "^1.4.1",
     "imapflow": "^1.2.13",
     "meteor-node-stubs": "^1.2.12",
     "react": "^18.2.0",

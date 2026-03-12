@@ -189,6 +189,9 @@ export function deleteActiveTab(app) {
 
 export function switchToSheet(app, sheetId) {
   if (!app.findTabById(sheetId)) return;
+  if (app.regionRecordingState && app.regionRecordingState.isRecording) {
+    app.stopRegionRecording(true);
+  }
   var keepCrossMention = !!(
     app.crossTabMentionContext &&
     sheetId !== app.crossTabMentionContext.sourceSheetId &&

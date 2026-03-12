@@ -2485,6 +2485,38 @@ function SheetPage({
               </LucideIcon>
             </button>
           </div>
+          <div
+            id="region-recording-controls"
+            className="formula-cluster formula-cluster-format region-recording-controls"
+            hidden
+          >
+            <button
+              id="record-region"
+              type="button"
+              aria-label="Record selected region"
+              title="Record selected region"
+              hidden
+            >
+              <LucideIcon size={16}>
+                <circle cx="12" cy="12" r="4.5" />
+              </LucideIcon>
+              <span id="record-region-label">Record</span>
+            </button>
+            <button
+              id="download-region-recording"
+              type="button"
+              aria-label="Download region GIF"
+              title="Download region GIF"
+              hidden
+            >
+              <LucideIcon size={16}>
+                <path d="M12 3v12" />
+                <path d="m7 10 5 5 5-5" />
+                <path d="M5 21h14" />
+              </LucideIcon>
+              Download GIF
+            </button>
+          </div>
         </div>
       </div>
       <div className="table-wrap">
