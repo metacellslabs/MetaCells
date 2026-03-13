@@ -11,7 +11,7 @@ jobs:
     env:
       CI: true
       TEST_BROWSER_DRIVER: puppeteer
-      TMPDIR: ${{ runner.temp }}
+      TMPDIR: /tmp
 
     steps:
       - uses: actions/checkout@v4

@@ -22,13 +22,21 @@ function hashFile(filePath) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
+function buildBundledManifestHashes(manifest) {
+  return manifest.map((item) => ({
+    file: String(item.file || ''),
+    id: item.id,
+    hash: 'bundled',
+  }));
+}
+
 export function validateDiscoveredChannelConnectorsOnServer() {
+  const manifest = getRegisteredChannelConnectorManifest();
   const connectorsDir = getConnectorDirectory();
   if (!fs.existsSync(connectorsDir)) {
-    throw new Error(`Channel connector directory not found: ${connectorsDir}`);
+    return buildBundledManifestHashes(manifest);
   }
 
-  const manifest = getRegisteredChannelConnectorManifest();
   const manifestByFile = new Map();
   for (let i = 0; i < manifest.length; i += 1) {
     manifestByFile.set(String(manifest[i].file || ''), manifest[i]);

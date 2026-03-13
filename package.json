@@ -1,10 +1,24 @@
 {
   "name": "metacells",
   "private": true,
+  "version": "0.1.0",
+  "description": "MetaCells desktop shell and Meteor application",
+  "author": "MetaCells contributors",
+  "main": "electron/main.js",
   "scripts": {
+    "clean:meteor": "rm -rf _build .meteor/local/build",
+    "clean:desktop": "rm -rf .desktop-runtime dist/electron",
     "start": "METACELLS_ROLE=web meteor run --port 3400 --exclude-archs web.browser.legacy --no-lint",
     "start:web": "METACELLS_ROLE=web meteor run --port 3400 --exclude-archs web.browser.legacy --no-lint",
     "start:worker": "MONGO_PORT=$(cat .meteor/local/db/METEOR-PORT) && MONGO_URL=mongodb://127.0.0.1:${MONGO_PORT}/meteor ROOT_URL=http://127.0.0.1:3410 METACELLS_ROLE=worker meteor run --port 3410 --exclude-archs web.browser.legacy",
+    "desktop:prepare": "node scripts/desktop-prepare.js",
+    "desktop:dev": "node scripts/electron-dev.js",
+    "desktop:dev:frontend-only": "METACELLS_DESKTOP_NO_SERVER=1 node scripts/electron-dev.js",
+    "desktop:pack": "node scripts/desktop-package.js --dir",
+    "desktop:dist": "node scripts/desktop-package.js",
+    "desktop:dist:mac": "node scripts/desktop-package.js --mac",
+    "desktop:dist:linux": "node scripts/desktop-package.js --linux",
+    "desktop:dist:win": "node scripts/desktop-package.js --win",
     "test": "meteor test --once --driver-package meteortesting:mocha",
     "test:workbooks": "TMPDIR=/tmp WORKBOOK_SPEC_DIR=tests/workbook-specs meteor test --once --driver-package meteortesting:mocha --port 3225",
     "test-app": "TEST_WATCH=1 meteor test --full-app --driver-package meteortesting:mocha",
@@ -29,7 +43,49 @@
     "@rspack/core": "^1.7.1",
     "@rspack/plugin-react-refresh": "^1.4.3",
     "@svgr/webpack": "^8.1.0",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "mongodb-memory-server-core": "^11.0.1",
     "react-refresh": "^0.17.0"
+  },
+  "build": {
+    "appId": "com.metacells.desktop",
+    "productName": "MetaCells",
+    "asar": true,
+    "directories": {
+      "output": "dist/electron"
+    },
+    "extraResources": [
+      {
+        "from": ".desktop-runtime",
+        "to": "desktop-runtime"
+      }
+    ],
+    "files": [
+      "electron/**/*",
+      "package.json",
+      "public/logo.png"
+    ],
+    "mac": {
+      "identity": null,
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    }
   },
   "meteor": {
     "mainModule": {

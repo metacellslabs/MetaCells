@@ -225,6 +225,66 @@ Optional worker for background jobs and connectors:
 npm run start:worker
 ```
 
+### Run with Electron
+
+Electron is configured as a desktop shell for the Meteor app.
+
+Development mode starts Meteor and Electron together:
+
+```bash
+npm run desktop:dev
+```
+
+If you already have the Meteor app running elsewhere, point Electron at that URL:
+
+```bash
+METACELLS_DESKTOP_URL=http://127.0.0.1:3400 npm run desktop:dev:frontend-only
+```
+
+### Build desktop packages
+
+Install dependencies first:
+
+```bash
+npm install
+```
+
+Build a self-contained desktop app for the current host platform:
+
+```bash
+npm run desktop:dist
+```
+
+Build platform-specific self-contained packages:
+
+```bash
+npm run desktop:dist:mac
+npm run desktop:dist:linux
+npm run desktop:dist:win
+```
+
+Create an unpacked app directory without installers:
+
+```bash
+npm run desktop:pack
+```
+
+Artifacts are written to:
+
+```text
+dist/electron
+```
+
+These package commands now prepare a bundled local backend before packaging:
+
+- Meteor server bundle
+- Meteor Node runtime
+- MongoDB server binary for the current host OS/architecture
+
+The first packaging run may take longer because it downloads the MongoDB binary.
+
+If you build a Meteor server bundle manually, write it outside the app source tree or keep `.meteorignore` in place. Otherwise Meteor may try to parse generated files under `_build/` as application source on the next `meteor run`.
+
 ### Run with Docker
 
 ```bash

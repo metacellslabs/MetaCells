@@ -29,13 +29,21 @@ function hashFile(filePath) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
+function buildBundledManifestHashes(manifest) {
+  return manifest.map((item) => ({
+    file: String(item.file || ''),
+    name: item.name,
+    hash: 'bundled',
+  }));
+}
+
 export function validateDiscoveredFormulasOnServer() {
+  const manifest = getRegisteredFormulaManifest();
   const formulasDir = getFormulaDirectory();
   if (!fs.existsSync(formulasDir)) {
-    throw new Error(`Formula directory not found: ${formulasDir}`);
+    return buildBundledManifestHashes(manifest);
   }
 
-  const manifest = getRegisteredFormulaManifest();
   const manifestByFile = new Map();
 
   for (let i = 0; i < manifest.length; i += 1) {

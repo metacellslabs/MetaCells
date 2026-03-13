@@ -22,13 +22,21 @@ function hashFile(filePath) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
+function buildBundledManifestHashes(manifest) {
+  return manifest.map((item) => ({
+    file: String(item.file || ''),
+    id: item.id,
+    hash: 'bundled',
+  }));
+}
+
 export function validateDiscoveredAIProvidersOnServer() {
+  const manifest = getRegisteredAIProviderManifest();
   const providersDir = getProviderDirectory();
   if (!fs.existsSync(providersDir)) {
-    throw new Error(`AI provider directory not found: ${providersDir}`);
+    return buildBundledManifestHashes(manifest);
   }
 
-  const manifest = getRegisteredAIProviderManifest();
   const manifestByFile = new Map();
   for (let i = 0; i < manifest.length; i += 1) {
     manifestByFile.set(String(manifest[i].file || ''), manifest[i]);
