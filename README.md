@@ -62,7 +62,7 @@ Each cell can:
 Everything updates reactively.
 
 ---
-## Hot fixes wanted!
+## 🔥 Hot fixes wanted
 
 <!-- featured-issues:start -->
 
