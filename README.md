@@ -65,6 +65,9 @@ Everything updates reactively.
 ## Hot fixes wanted!
 
 <!-- featured-issues:start -->
+
+_No featured issues right now._
+
 <!-- featured-issues:end -->
 
 ## What you can build
