@@ -62,6 +62,10 @@ Each cell can:
 Everything updates reactively.
 
 ---
+## Hot fixes wanted!
+
+<!-- featured-issues:start -->
+<!-- featured-issues:end -->
 
 ## What you can build
 
