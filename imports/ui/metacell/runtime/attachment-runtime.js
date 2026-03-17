@@ -5,13 +5,15 @@ function getAttachmentDisplayValue(app, rawValue) {
   var attachment = app.parseAttachmentSource(raw);
   if (!attachment) return raw;
   return String(
-    attachment.name ||
-      (attachment.pending ? 'Select file' : 'Attached file'),
+    attachment.name || (attachment.pending ? 'Select file' : 'Attached file'),
   );
 }
 
 function syncActiveAttachmentValue(app, cellId, rawValue) {
-  if (!app.activeInput || app.activeInput.id !== String(cellId || '').toUpperCase()) {
+  if (
+    !app.activeInput ||
+    app.activeInput.id !== String(cellId || '').toUpperCase()
+  ) {
     return;
   }
   var displayValue = getAttachmentDisplayValue(app, rawValue);
@@ -72,6 +74,31 @@ export function setupAttachmentControls(app) {
   }
   if (app.table) {
     app.table.addEventListener('click', (e) => {
+      var fileDownloadButton =
+        e.target && e.target.closest
+          ? e.target.closest('.file-output-download')
+          : null;
+      if (fileDownloadButton) {
+        var chip = fileDownloadButton.closest('.file-output-chip');
+        if (chip) {
+          e.preventDefault();
+          e.stopPropagation();
+          var td = e.target.closest('td');
+          var input = td ? td.querySelector('input') : null;
+          if (input) {
+            var storedDisplay = app.storage.getCellDisplayValue(
+              app.activeSheetId,
+              input.id,
+            );
+            var fileOutput = app.parseFileOutput(storedDisplay);
+            if (fileOutput) {
+              app.downloadFileOutput(fileOutput);
+            }
+          }
+        }
+        return;
+      }
+
       var selectButton =
         e.target && e.target.closest
           ? e.target.closest('.attachment-select')

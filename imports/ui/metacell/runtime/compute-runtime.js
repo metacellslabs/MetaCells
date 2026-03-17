@@ -148,14 +148,21 @@ function getAISkeletonVariant(rawValue) {
 }
 
 function shouldHighlightEmptyMentionedCell(app, cellId, rawValue) {
-  if (!app || !app.storage || typeof app.storage.getDependencyGraph !== 'function') {
+  if (
+    !app ||
+    !app.storage ||
+    typeof app.storage.getDependencyGraph !== 'function'
+  ) {
     return false;
   }
   if (String(rawValue == null ? '' : rawValue).trim() !== '') return false;
   var graph = app.storage.getDependencyGraph();
-  var key = String(app.activeSheetId || '') + ':' + String(cellId || '').toUpperCase();
+  var key =
+    String(app.activeSheetId || '') + ':' + String(cellId || '').toUpperCase();
   var dependents =
-    graph && graph.dependentsByCell && Array.isArray(graph.dependentsByCell[key])
+    graph &&
+    graph.dependentsByCell &&
+    Array.isArray(graph.dependentsByCell[key])
       ? graph.dependentsByCell[key]
       : [];
   return dependents.length > 0;
@@ -217,7 +224,12 @@ export function renderCurrentSheetFromStorage(app) {
   var decorateFormulaMentionsForDisplay = (rawValue) => {
     return String(rawValue || '');
   };
-  var shouldShowGeneratedAISkeleton = (generatedBy, showFormulas, attachment, errorHint) => {
+  var shouldShowGeneratedAISkeleton = (
+    generatedBy,
+    showFormulas,
+    attachment,
+    errorHint,
+  ) => {
     var sourceCellId = String(generatedBy || '').toUpperCase();
     if (showFormulas || attachment || errorHint || !sourceCellId) return false;
     var sourceRaw = app.getRawCellValue(sourceCellId);
@@ -262,11 +274,15 @@ export function renderCurrentSheetFromStorage(app) {
           ? storedDisplay
           : raw;
 
+      var fileOutput =
+        !attachment && !showFormulas ? app.parseFileOutput(displayValue) : null;
       if (attachment) {
         displayValue = String(
           attachment.name ||
             (attachment.pending ? 'Select file' : 'Attached file'),
         );
+      } else if (fileOutput) {
+        displayValue = String(fileOutput.name || 'file');
       }
       if (String(displayValue || '').indexOf('#AI_ERROR:') === 0) {
         displayValue =
@@ -287,6 +303,7 @@ export function renderCurrentSheetFromStorage(app) {
         !showFormulas &&
         isFormula &&
         !attachment &&
+        !fileOutput &&
         !errorHint &&
         (cellState === 'pending' || cellState === 'stale') &&
         String(displayValue == null ? '' : displayValue).trim() === '...';
@@ -328,6 +345,7 @@ export function renderCurrentSheetFromStorage(app) {
         String(displayValue == null ? '' : displayValue) !== '',
       );
       input.parentElement.classList.toggle('has-attachment', !!attachment);
+      input.parentElement.classList.toggle('has-file-output', !!fileOutput);
       input.parentElement.classList.toggle('has-error', !!errorHint);
       if (errorHint) {
         input.parentElement.setAttribute('data-error-hint', errorHint);
@@ -337,6 +355,7 @@ export function renderCurrentSheetFromStorage(app) {
       app.grid.renderCellValue(input, displayValue, isEditing, isFormula, {
         literal: showFormulas ? true : literalDisplay,
         attachment: attachment,
+        fileOutput: fileOutput,
         aiSkeleton: showAISkeleton,
         aiSkeletonVariant: getAISkeletonVariant(raw),
         error: !!errorHint,
@@ -540,11 +559,17 @@ export function computeAll(app) {
             var displayValue = showFormulas
               ? decorateFormulaMentionsForDisplay(raw)
               : value;
+            var fileOutput =
+              !attachment && !showFormulas
+                ? app.parseFileOutput(displayValue)
+                : null;
             if (attachment) {
               displayValue = String(
                 attachment.name ||
                   (attachment.pending ? 'Select file' : 'Attached file'),
               );
+            } else if (fileOutput) {
+              displayValue = String(fileOutput.name || 'file');
             }
             if (String(displayValue || '').indexOf('#AI_ERROR:') === 0) {
               displayValue =
@@ -564,6 +589,7 @@ export function computeAll(app) {
               !showFormulas &&
               isFormula &&
               !attachment &&
+              !fileOutput &&
               !errorHint &&
               (cellState === 'pending' || cellState === 'stale') &&
               String(displayValue == null ? '' : displayValue).trim() === '...';
@@ -616,6 +642,10 @@ export function computeAll(app) {
               'has-attachment',
               !!attachment,
             );
+            input.parentElement.classList.toggle(
+              'has-file-output',
+              !!fileOutput,
+            );
             input.parentElement.classList.toggle('has-error', !!errorHint);
             if (errorHint) {
               input.parentElement.setAttribute('data-error-hint', errorHint);
@@ -630,6 +660,7 @@ export function computeAll(app) {
               {
                 literal: showFormulas ? true : literalDisplay,
                 attachment: attachment,
+                fileOutput: fileOutput,
                 aiSkeleton: showAISkeleton,
                 aiSkeletonVariant: getAISkeletonVariant(raw),
                 error: !!errorHint,
@@ -854,8 +885,13 @@ function updateWrappedRowHeights(app) {
   var measuredHeights = {};
 
   if (app.displayMode === 'formulas') {
-    for (var formulaRowIndex = 1; formulaRowIndex < app.table.rows.length; formulaRowIndex++) {
-      if (app.storage.getRowHeight(app.activeSheetId, formulaRowIndex) != null) continue;
+    for (
+      var formulaRowIndex = 1;
+      formulaRowIndex < app.table.rows.length;
+      formulaRowIndex++
+    ) {
+      if (app.storage.getRowHeight(app.activeSheetId, formulaRowIndex) != null)
+        continue;
       app.grid.setRowHeight(formulaRowIndex, defaultHeight);
     }
     if (typeof app.grid.stabilizeHeaderMetrics === 'function') {

@@ -60,6 +60,19 @@ export function setupReportControls(app) {
       if (!shell) return;
       e.preventDefault();
       e.stopPropagation();
+      if (
+        fileButton &&
+        fileButton.classList.contains('report-file-output-download')
+      ) {
+        var sheetId = String(shell.dataset.sheetId || '');
+        var cellId = String(shell.dataset.cellId || '').toUpperCase();
+        var storedDisplay = app.storage.getCellDisplayValue(sheetId, cellId);
+        var fileOutput = app.parseFileOutput(storedDisplay);
+        if (fileOutput) {
+          app.downloadFileOutput(fileOutput);
+        }
+        return;
+      }
       app.handleReportFileShellAction(shell, !!removeButton);
       return;
     }
@@ -546,6 +559,25 @@ export function createLinkedReportFileElement(app, inputResolved) {
     inputResolved.cellId,
   );
   var attachment = app.parseAttachmentSource(raw);
+
+  var displayValue = app.storage.getCellDisplayValue(
+    inputResolved.sheetId,
+    inputResolved.cellId,
+  );
+  var fileOutput = !attachment ? app.parseFileOutput(displayValue) : null;
+
+  if (fileOutput) {
+    shell.classList.add('has-file-output');
+    var downloadBtn = document.createElement('button');
+    downloadBtn.type = 'button';
+    downloadBtn.className = 'report-file-button report-file-output-download';
+    downloadBtn.textContent = String(
+      fileOutput.name || inputResolved.placeholder || 'Download file',
+    );
+    shell.appendChild(downloadBtn);
+    return shell;
+  }
+
   var isImage =
     !!attachment &&
     !!attachment.previewUrl &&
