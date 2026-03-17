@@ -4,7 +4,7 @@
   "scripts": {
     "start": "cross-env METACELLS_ROLE=web meteor run --port 3400 --exclude-archs web.browser.legacy --no-lint",
     "start:web": "cross-env METACELLS_ROLE=web meteor run --port 3400 --exclude-archs web.browser.legacy --no-lint",
-    "start:worker": "node scripts/start-worker.js",
+    "start:worker": "node scripts/run-meteor.js worker",
     "test": "meteor test --once --driver-package meteortesting:mocha",
     "test:workbooks": "cross-env WORKBOOK_SPEC_DIR=tests/workbook-specs meteor test --once --driver-package meteortesting:mocha --port 3225",
     "test-app": "cross-env TEST_WATCH=1 meteor test --full-app --driver-package meteortesting:mocha",
