@@ -201,28 +201,36 @@ export const parserMethods = {
       var ch = text.charAt(i);
       if (ch === '"') {
         var start = i;
-        i++;
-        while (i < text.length) {
-          if (text.charAt(i) === '"' && text.charAt(i - 1) !== '\\') {
-            i++;
+        var j = i + 1;
+        while (j < text.length) {
+          var c = text.charAt(j);
+          var prev = j > 0 ? text.charAt(j - 1) : '';
+          if (c === '"' && prev !== '\\') {
+            j++;
             break;
           }
-          i++;
+          j++;
         }
-        parts.push({ literal: true, value: text.slice(start, i) });
+        parts.push({ literal: true, value: text.slice(i, j) });
+        i = j;
         continue;
       }
+      // Single-quoted strings: 'text' is a string literal, but '(prompt) is
+      // an inline AI ask handled by preprocessInlineAskCalls — skip that form.
       if (ch === "'" && text.charAt(i + 1) !== '(') {
         var qstart = i;
-        i++;
-        while (i < text.length) {
-          if (text.charAt(i) === "'" && text.charAt(i - 1) !== '\\') {
-            i++;
+        var k = i + 1;
+        while (k < text.length) {
+          var qc = text.charAt(k);
+          var qprev = k > 0 ? text.charAt(k - 1) : '';
+          if (qc === "'" && qprev !== '\\') {
+            k++;
             break;
           }
-          i++;
+          k++;
         }
-        parts.push({ literal: true, value: text.slice(qstart, i) });
+        parts.push({ literal: true, value: text.slice(i, k) });
+        i = k;
         continue;
       }
       var last = parts[parts.length - 1];
