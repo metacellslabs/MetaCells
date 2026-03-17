@@ -66,6 +66,10 @@ Everything updates reactively.
 
 <!-- featured-issues:start -->
 
+### ui/ux
+
+- [#3 Formula bar behavior](https://github.com/metacellslabs/MetaCells/issues/3)
+
 ### enhancement
 
 - [#4 Add support for $ when referencing cells and regions in MetaCells.](https://github.com/metacellslabs/MetaCells/issues/4)
