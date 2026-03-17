@@ -572,6 +572,25 @@ export class FormulaEngine {
           return this.evaluateCell(sheetId, id, stack, options);
         },
       });
+      var parsed = this.parseCellId(id);
+      if (parsed) {
+        var colLabel = this.columnIndexToLabel(parsed.col);
+        var rowNum = parsed.row;
+        var absoluteVariants = [
+          '$' + colLabel + '$' + rowNum,
+          '$' + colLabel + rowNum,
+          colLabel + '$' + rowNum,
+        ];
+        absoluteVariants.forEach((variant) => {
+          Object.defineProperty(context, variant, {
+            enumerable: false,
+            get: () => {
+              this.recordDependencyCell(options, sheetId, id);
+              return this.evaluateCell(sheetId, id, stack, options);
+            },
+          });
+        });
+      }
     });
 
     return context;

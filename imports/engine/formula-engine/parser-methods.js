@@ -51,121 +51,121 @@ export const parserMethods = {
       sourceCellId,
     );
     var withRawAtSheetRegionRefs = withRecalcTargets.replace(
-      /_@(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!([A-Za-z]+[0-9]+):([A-Za-z]+[0-9]+)/g,
+      /_@(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!(\$?[A-Za-z]+\$?[0-9]+):(\$?[A-Za-z]+\$?[0-9]+)/g,
       (_, quoted, plain, startCellId, endCellId) => {
         var sheetName = quoted || plain || '';
         return (
           'mentionRawSheetRegionRef("' +
           this.escapeForDoubleQuotedString(sheetName) +
           '","' +
-          startCellId.toUpperCase() +
+          startCellId.toUpperCase().replace(/\$/g, '') +
           '","' +
-          endCellId.toUpperCase() +
+          endCellId.toUpperCase().replace(/\$/g, '') +
           '")'
         );
       },
     );
     var withAtSheetRegionRefs = withRawAtSheetRegionRefs.replace(
-      /@(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!([A-Za-z]+[0-9]+):([A-Za-z]+[0-9]+)/g,
+      /@(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!(\$?[A-Za-z]+\$?[0-9]+):(\$?[A-Za-z]+\$?[0-9]+)/g,
       (_, quoted, plain, startCellId, endCellId) => {
         var sheetName = quoted || plain || '';
         return (
           'mentionSheetRegionRef("' +
           this.escapeForDoubleQuotedString(sheetName) +
           '","' +
-          startCellId.toUpperCase() +
+          startCellId.toUpperCase().replace(/\$/g, '') +
           '","' +
-          endCellId.toUpperCase() +
+          endCellId.toUpperCase().replace(/\$/g, '') +
           '")'
         );
       },
     );
     var withRawAtRegionRefs = withAtSheetRegionRefs.replace(
-      /_@([A-Za-z]+[0-9]+):([A-Za-z]+[0-9]+)/g,
+      /_@(\$?[A-Za-z]+\$?[0-9]+):(\$?[A-Za-z]+\$?[0-9]+)/g,
       (_, startCellId, endCellId) => {
         return (
           'mentionRawRegionRef("' +
-          startCellId.toUpperCase() +
+          startCellId.toUpperCase().replace(/\$/g, '') +
           '","' +
-          endCellId.toUpperCase() +
+          endCellId.toUpperCase().replace(/\$/g, '') +
           '")'
         );
       },
     );
     var withAtRegionRefs = withRawAtRegionRefs.replace(
-      /@([A-Za-z]+[0-9]+):([A-Za-z]+[0-9]+)/g,
+      /@(\$?[A-Za-z]+\$?[0-9]+):(\$?[A-Za-z]+\$?[0-9]+)/g,
       (_, startCellId, endCellId) => {
         return (
           'mentionRegionRef("' +
-          startCellId.toUpperCase() +
+          startCellId.toUpperCase().replace(/\$/g, '') +
           '","' +
-          endCellId.toUpperCase() +
+          endCellId.toUpperCase().replace(/\$/g, '') +
           '")'
         );
       },
     );
     var withRawAtSheetRefs = withAtRegionRefs.replace(
-      /_@(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!([A-Za-z]+[0-9]+)/g,
+      /_@(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!(\$?[A-Za-z]+\$?[0-9]+)/g,
       (_, quoted, plain, cellId) => {
         var sheetName = quoted || plain || '';
         return (
           'mentionRawSheetRef("' +
           this.escapeForDoubleQuotedString(sheetName) +
           '","' +
-          cellId.toUpperCase() +
+          cellId.toUpperCase().replace(/\$/g, '') +
           '")'
         );
       },
     );
     var withAtSheetRefs = withRawAtSheetRefs.replace(
-      /@(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!([A-Za-z]+[0-9]+)/g,
+      /@(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!(\$?[A-Za-z]+\$?[0-9]+)/g,
       (_, quoted, plain, cellId) => {
         var sheetName = quoted || plain || '';
         return (
           'mentionSheetRef("' +
           this.escapeForDoubleQuotedString(sheetName) +
           '","' +
-          cellId.toUpperCase() +
+          cellId.toUpperCase().replace(/\$/g, '') +
           '")'
         );
       },
     );
     var withSheetRegionRefs = withAtSheetRefs.replace(
-      /(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!([A-Za-z]+[0-9]+):([A-Za-z]+[0-9]+)/g,
+      /(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!(\$?[A-Za-z]+\$?[0-9]+):(\$?[A-Za-z]+\$?[0-9]+)/g,
       (_, quoted, plain, startCellId, endCellId) => {
         var sheetName = quoted || plain || '';
         return (
           'sheetRegionRef("' +
           this.escapeForDoubleQuotedString(sheetName) +
           '","' +
-          startCellId.toUpperCase() +
+          startCellId.toUpperCase().replace(/\$/g, '') +
           '","' +
-          endCellId.toUpperCase() +
+          endCellId.toUpperCase().replace(/\$/g, '') +
           '")'
         );
       },
     );
     var withRegionRefs = withSheetRegionRefs.replace(
-      /([A-Za-z]+[0-9]+):([A-Za-z]+[0-9]+)/g,
+      /(\$?[A-Za-z]+\$?[0-9]+):(\$?[A-Za-z]+\$?[0-9]+)/g,
       (_, startCellId, endCellId) => {
         return (
           'regionRef("' +
-          startCellId.toUpperCase() +
+          startCellId.toUpperCase().replace(/\$/g, '') +
           '","' +
-          endCellId.toUpperCase() +
+          endCellId.toUpperCase().replace(/\$/g, '') +
           '")'
         );
       },
     );
     var withSheetRefs = withRegionRefs.replace(
-      /(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!([A-Za-z]+[0-9]+)/g,
+      /(?:'([^']+)'|([A-Za-z][A-Za-z0-9 _-]*))!(\$?[A-Za-z]+\$?[0-9]+)/g,
       (_, quoted, plain, cellId) => {
         var sheetName = quoted || plain || '';
         return (
           'sheetRef("' +
           this.escapeForDoubleQuotedString(sheetName) +
           '","' +
-          cellId.toUpperCase() +
+          cellId.toUpperCase().replace(/\$/g, '') +
           '")'
         );
       },

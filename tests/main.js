@@ -1229,6 +1229,72 @@ describe('metacells', function () {
       );
     });
 
+    it('evaluates formulas with dollar-sign absolute cell references', async function () {
+      const { FormulaEngine } =
+        await import('../imports/engine/formula-engine.js');
+
+      const cells = {
+        A1: '10',
+        B1: '20',
+        A2: '30',
+        B2: '=SUM($A$1:$B$1)',
+        B3: '=$A$1+$B$1',
+        B4: '=$A1',
+        B5: '=A$1',
+      };
+      const storageService = {
+        getCellValue(sheetId, cellId) {
+          return cells[cellId] || '';
+        },
+        getCellState() {
+          return 'resolved';
+        },
+        resolveNamedCell() {
+          return null;
+        },
+      };
+      const formulaEngine = new FormulaEngine(
+        storageService,
+        {},
+        () => [{ id: 'sheet-1', name: 'Sheet 1', type: 'sheet' }],
+        Object.keys(cells),
+      );
+
+      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'B2', {}), 30);
+      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'B3', {}), 30);
+      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'B4', {}), 10);
+      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'B5', {}), 10);
+    });
+
+    it('shiftFormulaReferences preserves dollar-sign absolute references', async function () {
+      const { referenceMethods } = await import(
+        '../imports/engine/formula-engine/reference-methods.js'
+      );
+
+      const helper = Object.assign(Object.create(null), referenceMethods, {
+        formatCellId(col, row) {
+          return this.columnIndexToLabel(col) + row;
+        },
+      });
+
+      assert.strictEqual(
+        helper.shiftFormulaReferences('=$A$1+B2', 1, 1),
+        '=$A$1+C3',
+      );
+      assert.strictEqual(
+        helper.shiftFormulaReferences('=$A1+B$2', 1, 1),
+        '=$A2+C$2',
+      );
+      assert.strictEqual(
+        helper.shiftFormulaReferences('=SUM($A$1:$B$5)', 2, 2),
+        '=SUM($A$1:$B$5)',
+      );
+      assert.strictEqual(
+        helper.shiftFormulaReferences('=A1+$B2', 1, 1),
+        '=B2+$B3',
+      );
+    });
+
     it('saves workbook cell content in Mongo', async function () {
       const { Sheets } = await import('../imports/api/sheets/index.js');
       const { decodeWorkbookDocument } =

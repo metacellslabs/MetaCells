@@ -49,7 +49,7 @@ export const referenceMethods = {
   },
 
   parseCellId(cellId) {
-    var match = /^([A-Za-z]+)([0-9]+)$/.exec(String(cellId || ''));
+    var match = /^\$?([A-Za-z]+)\$?([0-9]+)$/.exec(String(cellId || ''));
     if (!match) return null;
     return {
       col: this.columnLabelToIndex(match[1].toUpperCase()),
@@ -106,5 +106,37 @@ export const referenceMethods = {
 
   coerce(value) {
     return isNaN(parseFloat(value)) ? value : parseFloat(value);
+  },
+
+  shiftFormulaReferences(rawValue, dRow, dCol) {
+    if (!rawValue) return rawValue;
+    var prefix = rawValue.charAt(0);
+    if (prefix !== '=' && prefix !== "'" && prefix !== '>' && prefix !== '#')
+      return rawValue;
+    var body = prefix === '=' ? rawValue.substring(1) : rawValue;
+    var replaced = body.replace(
+      /((?:'[^']+'|[A-Za-z][A-Za-z0-9 _-]*)!)?(\$?[A-Za-z]+\$?[0-9]+)(:(\$?[A-Za-z]+\$?[0-9]+))?/g,
+      (_, qualifier, firstRef, rangePart, secondRef) => {
+        var shiftRef = (ref) => {
+          var m = /^(\$?)([A-Za-z]+)(\$?)([0-9]+)$/.exec(ref);
+          if (!m) return ref;
+          var dollarCol = m[1];
+          var colLabel = m[2];
+          var dollarRow = m[3];
+          var rowNum = parseInt(m[4], 10);
+          var colIndex = this.columnLabelToIndex(colLabel.toUpperCase());
+          var nextCol = dollarCol ? colIndex : Math.max(1, colIndex + dCol);
+          var nextRow = dollarRow ? rowNum : Math.max(1, rowNum + dRow);
+          return (dollarCol ? '$' : '') + this.columnIndexToLabel(nextCol) + (dollarRow ? '$' : '') + nextRow;
+        };
+
+        var left = shiftRef(firstRef);
+        if (rangePart && secondRef) {
+          return (qualifier || '') + left + ':' + shiftRef(secondRef);
+        }
+        return (qualifier || '') + left;
+      },
+    );
+    return prefix === '=' ? '=' + replaced : replaced;
   },
 };
