@@ -446,7 +446,9 @@ export class SpreadsheetApp {
       this.displayModeButton &&
       String(
         this.displayModeButton.getAttribute('data-display-mode-current') || '',
-      ).trim().toLowerCase() === 'formulas'
+      )
+        .trim()
+        .toLowerCase() === 'formulas'
         ? 'formulas'
         : 'values';
     this.editLockOwnerId =
@@ -498,7 +500,9 @@ export class SpreadsheetApp {
     var heights = [];
     for (var rowIndex = 0; rowIndex < this.table.rows.length; rowIndex++) {
       var row = this.table.rows[rowIndex];
-      heights[rowIndex] = row ? Math.max(0, Math.round(row.offsetHeight || 0)) : 0;
+      heights[rowIndex] = row
+        ? Math.max(0, Math.round(row.offsetHeight || 0))
+        : 0;
     }
     return heights;
   }
@@ -520,7 +524,11 @@ export class SpreadsheetApp {
       headerRow.style.height = headerHeight + 'px';
       headerRow.style.minHeight = headerHeight + 'px';
       headerRow.style.maxHeight = headerHeight + 'px';
-      for (var headerColIndex = 0; headerColIndex < headerRow.cells.length; headerColIndex++) {
+      for (
+        var headerColIndex = 0;
+        headerColIndex < headerRow.cells.length;
+        headerColIndex++
+      ) {
         var headerCell = headerRow.cells[headerColIndex];
         if (!headerCell) continue;
         headerCell.style.height = headerHeight + 'px';
@@ -640,6 +648,52 @@ export class SpreadsheetApp {
         pending: !!(payload && payload.pending),
       })
     );
+  }
+
+  parseFileOutput(value) {
+    var raw = String(value == null ? '' : value);
+    if (raw.indexOf('__FILE_OUTPUT__:') !== 0) return null;
+    try {
+      var parsed = JSON.parse(raw.substring('__FILE_OUTPUT__:'.length));
+      if (!parsed || typeof parsed !== 'object') return null;
+      return parsed;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  buildFileOutput(payload) {
+    return (
+      '__FILE_OUTPUT__:' +
+      JSON.stringify({
+        name: String((payload && payload.name) || 'file'),
+        content: String((payload && payload.content) || ''),
+        type: String((payload && payload.type) || 'TXT').toUpperCase(),
+      })
+    );
+  }
+
+  downloadFileOutput(fileOutput) {
+    var name = String((fileOutput && fileOutput.name) || 'file');
+    var content = String((fileOutput && fileOutput.content) || '');
+    var type = String((fileOutput && fileOutput.type) || 'TXT').toUpperCase();
+    var mimeType;
+    if (type === 'PDF') mimeType = 'application/pdf';
+    else if (type === 'CSV') mimeType = 'text/csv';
+    else if (type === 'JSON') mimeType = 'application/json';
+    else if (type === 'HTML') mimeType = 'text/html';
+    else if (type === 'MD' || type === 'MARKDOWN') mimeType = 'text/markdown';
+    else mimeType = 'text/plain';
+    var blob = new Blob([content], { type: mimeType });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   syncServerEditLock(locked) {
@@ -778,7 +832,12 @@ export class SpreadsheetApp {
         previousRaw,
       );
     }
-    this.storage.setCellValue(this.activeSheetId, normalizedCellId, nextRaw, meta);
+    this.storage.setCellValue(
+      this.activeSheetId,
+      normalizedCellId,
+      nextRaw,
+      meta,
+    );
   }
 
   setCellFormat(cellId, format) {
@@ -973,7 +1032,9 @@ export class SpreadsheetApp {
   }
 
   hasDownstreamDependentsForCell(sheetId, cellId) {
-    return this.getTransitiveDependentSourceKeysForCell(sheetId, cellId).length > 0;
+    return (
+      this.getTransitiveDependentSourceKeysForCell(sheetId, cellId).length > 0
+    );
   }
 
   parseDependencySourceKey(sourceKey) {
@@ -996,9 +1057,7 @@ export class SpreadsheetApp {
   getTransitiveDependentSourceKeysForCell(sheetId, cellId) {
     var graph = this.storage.getDependencyGraph();
     var startKey =
-      String(sheetId || '') +
-      ':' +
-      String(cellId || '').toUpperCase();
+      String(sheetId || '') + ':' + String(cellId || '').toUpperCase();
     var queue = [];
     var seen = Object.create(null);
     var result = [];
@@ -1310,7 +1369,11 @@ export class SpreadsheetApp {
         error: '',
       };
       if (this.isExplicitAsyncFormulaRaw(raw)) nextState.value = '';
-      this.storage.setCellRuntimeState(parsed.sheetId, parsed.cellId, nextState);
+      this.storage.setCellRuntimeState(
+        parsed.sheetId,
+        parsed.cellId,
+        nextState,
+      );
     }
   }
 
@@ -1536,7 +1599,11 @@ export class SpreadsheetApp {
     var days = dayToken ? parseInt(dayToken, 10) : 1;
     if (isNaN(days) || days < 1) return null;
 
-    return { prompt: prompt, days: days, includeAttachments: includeAttachments };
+    return {
+      prompt: prompt,
+      days: days,
+      includeAttachments: includeAttachments,
+    };
   }
 
   runTablePromptForCell(cellId, rawValue, inputElement) {
@@ -1589,9 +1656,7 @@ export class SpreadsheetApp {
     this.aiService
       .askTable(prepared.userPrompt, spec.cols, spec.rows, {
         onResult: (rows) => {
-          if (
-            String(this.getRawCellValue(sourceCellId) || '') !== sourceRaw
-          ) {
+          if (String(this.getRawCellValue(sourceCellId) || '') !== sourceRaw) {
             return;
           }
           this.placeTableAtCell(sourceCellId, rows, true);
@@ -1696,7 +1761,9 @@ export class SpreadsheetApp {
     for (var rowIndex = 0; rowIndex < rows.length; rowIndex++) {
       var rowValues = Array.isArray(rows[rowIndex]) ? rows[rowIndex] : [];
       for (var colIndex = 0; colIndex < rowValues.length; colIndex++) {
-        add(this.formatCellId(source.col + colIndex, source.row + 1 + rowIndex));
+        add(
+          this.formatCellId(source.col + colIndex, source.row + 1 + rowIndex),
+        );
       }
     }
     return result;

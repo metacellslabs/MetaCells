@@ -428,6 +428,8 @@ export class GridManager {
       output.style.fontFamily = getFontFamilyCssValue(opts.fontFamily);
       if (opts.attachment) {
         output.innerHTML = this.renderAttachmentValue(opts.attachment);
+      } else if (opts.fileOutput) {
+        output.innerHTML = this.renderFileOutputValue(opts.fileOutput);
       } else if (opts.aiSkeleton) {
         if (aiSkeletonVariant === 'table') {
           output.innerHTML =
@@ -506,14 +508,23 @@ export class GridManager {
     );
     if (statusNode) {
       var nextState = hasFormula ? String(opts.state || '') : '';
-      var showStatusBadge = !(opts.aiSkeleton && (nextState === 'pending' || nextState === 'stale'));
+      var showStatusBadge = !(
+        opts.aiSkeleton &&
+        (nextState === 'pending' || nextState === 'stale')
+      );
       var title = '';
-      if (showStatusBadge && (nextState === 'pending' || nextState === 'stale')) {
+      if (
+        showStatusBadge &&
+        (nextState === 'pending' || nextState === 'stale')
+      ) {
         title = nextState === 'stale' ? 'Waiting for recompute' : 'Computing';
       } else if (nextState === 'error') {
         title = 'Error';
       }
-      if (showStatusBadge && (nextState === 'pending' || nextState === 'stale')) {
+      if (
+        showStatusBadge &&
+        (nextState === 'pending' || nextState === 'stale')
+      ) {
         statusNode.innerHTML =
           "<svg viewBox='0 0 24 24' aria-hidden='true' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10' stroke-dasharray='3 3' /><path d='M12 6v6l4 2' /></svg>";
       } else if (nextState === 'error') {
@@ -523,7 +534,8 @@ export class GridManager {
         statusNode.innerHTML = '';
       }
       statusNode.className =
-        'cell-status' + (showStatusBadge && nextState ? ' is-' + nextState : '');
+        'cell-status' +
+        (showStatusBadge && nextState ? ' is-' + nextState : '');
       if (title) statusNode.setAttribute('title', title);
       else statusNode.removeAttribute('title');
     }
@@ -566,6 +578,28 @@ export class GridManager {
           "' /></div>"
         : '') +
       "<button type='button' class='attachment-remove' title='Remove attachment'>×</button></div>"
+    );
+  }
+
+  renderFileOutputValue(fileOutput) {
+    var meta = fileOutput || {};
+    var name = this.escapeHtml(String(meta.name || 'file'));
+    var type = String(meta.type || 'TXT').toUpperCase();
+    return (
+      "<div class='file-output-chip' data-file-name='" +
+      name +
+      "' data-file-type='" +
+      this.escapeHtml(type) +
+      "'>" +
+      "<button type='button' class='file-output-download' title='Download " +
+      name +
+      "'>" +
+      "<span class='file-output-icon' aria-hidden='true'>&#128196;</span>" +
+      "<span class='file-output-name'>" +
+      name +
+      '</span>' +
+      '</button>' +
+      '</div>'
     );
   }
 

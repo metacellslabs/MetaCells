@@ -1,0 +1,114 @@
+{
+  "name": "FILE Formula Workbook",
+  "workbook": {
+    "activeTabId": "sheet-1",
+    "tabs": [
+      {
+        "id": "sheet-1",
+        "name": "Main",
+        "type": "sheet",
+        "cells": [
+          { "address": "A1", "value": "Hello, World!" },
+          { "address": "B1", "formula": "=FILE(\"hello.txt\", A1, \"TXT\")" },
+          { "address": "A2", "value": "col1,col2\n1,2\n3,4" },
+          { "address": "B2", "formula": "=FILE(\"data.csv\", A2, \"CSV\")" },
+          { "address": "A3", "name": "doc_content", "value": "Sample document content" },
+          { "address": "B3", "formula": "=FILE(\"report.pdf\", @doc_content, \"PDF\")" }
+        ]
+      }
+    ]
+  },
+  "tests": [
+    {
+      "name": "FILE formula produces a file output token with the given name",
+      "steps": [
+        {
+          "expect": {
+            "target": "B1",
+            "contains": "__FILE_OUTPUT__",
+            "state": "resolved"
+          }
+        },
+        {
+          "expect": {
+            "target": "B1",
+            "contains": "hello.txt",
+            "state": "resolved"
+          }
+        },
+        {
+          "expect": {
+            "target": "B1",
+            "contains": "Hello, World!",
+            "state": "resolved"
+          }
+        }
+      ]
+    },
+    {
+      "name": "FILE formula works with CSV type",
+      "steps": [
+        {
+          "expect": {
+            "target": "B2",
+            "contains": "__FILE_OUTPUT__",
+            "state": "resolved"
+          }
+        },
+        {
+          "expect": {
+            "target": "B2",
+            "contains": "data.csv",
+            "state": "resolved"
+          }
+        }
+      ]
+    },
+    {
+      "name": "FILE formula works with named cell reference",
+      "steps": [
+        {
+          "expect": {
+            "target": "B3",
+            "contains": "__FILE_OUTPUT__",
+            "state": "resolved"
+          }
+        },
+        {
+          "expect": {
+            "target": "B3",
+            "contains": "report.pdf",
+            "state": "resolved"
+          }
+        },
+        {
+          "expect": {
+            "target": "B3",
+            "contains": "Sample document content",
+            "state": "resolved"
+          }
+        }
+      ]
+    },
+    {
+      "name": "FILE formula recomputes when input changes",
+      "steps": [
+        {
+          "expect": {
+            "target": "B1",
+            "contains": "Hello, World!",
+            "state": "resolved"
+          }
+        },
+        { "set": { "target": "A1", "value": "Updated content" } },
+        {
+          "expect": {
+            "target": "B1",
+            "contains": "Updated content",
+            "state": "resolved"
+          }
+        }
+      ]
+    }
+  ]
+}
