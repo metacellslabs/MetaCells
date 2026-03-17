@@ -42,8 +42,9 @@ export const parserMethods = {
 
   preprocessFormula(formula, sourceCellId) {
     var withInlineAsk = this.preprocessInlineAskCalls(formula);
+    var withStrippedDollars = this.stripAbsoluteReferenceMarkers(withInlineAsk);
     var withUpdateTargets = this.preprocessUpdateTargets(
-      withInlineAsk,
+      withStrippedDollars,
       sourceCellId,
     );
     var withRecalcTargets = this.preprocessRecalcTargets(
@@ -190,6 +191,38 @@ export const parserMethods = {
               '")';
       },
     );
+  },
+
+  stripAbsoluteReferenceMarkers(formula) {
+    var text = String(formula || '');
+    var out = '';
+    var i = 0;
+    while (i < text.length) {
+      var ch = text.charAt(i);
+      if (ch === '"' || ch === "'") {
+        var quote = ch;
+        out += ch;
+        i++;
+        while (i < text.length) {
+          var c = text.charAt(i);
+          var prev = i > 0 ? text.charAt(i - 1) : '';
+          out += c;
+          i++;
+          if (c === quote && prev !== '\\') break;
+        }
+        continue;
+      }
+      if (ch === '$') {
+        var next = text.charAt(i + 1);
+        if (/[A-Za-z0-9]/.test(next)) {
+          i++;
+          continue;
+        }
+      }
+      out += ch;
+      i++;
+    }
+    return out;
   },
 
   preprocessInlineAskCalls(formula) {
