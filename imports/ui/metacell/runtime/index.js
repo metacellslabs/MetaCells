@@ -212,6 +212,23 @@ import {
   toggleAddTabMenu as toggleAddTabMenuRuntime,
 } from './keyboard-runtime.js';
 import {
+  hideScheduleDialog as hideScheduleDialogRuntime,
+  setupScheduleDialog as setupScheduleDialogRuntime,
+  showScheduleDialogForCell as showScheduleDialogForCellRuntime,
+  showScheduleDialogForContextCell as showScheduleDialogForContextCellRuntime,
+} from './schedule-runtime.js';
+import {
+  hideAssistantPanel as hideAssistantPanelRuntime,
+  setupAssistantPanel as setupAssistantPanelRuntime,
+  toggleAssistantPanel as toggleAssistantPanelRuntime,
+} from './assistant-runtime.js';
+import {
+  hideFormulaTrackerPanel as hideFormulaTrackerPanelRuntime,
+  refreshFormulaTrackerPanel as refreshFormulaTrackerPanelRuntime,
+  setupFormulaTrackerPanel as setupFormulaTrackerPanelRuntime,
+  toggleFormulaTrackerPanel as toggleFormulaTrackerPanelRuntime,
+} from './formula-tracker-runtime.js';
+import {
   applyDependencyHighlight as applyDependencyHighlightRuntime,
   applyHeaderSelectionRange as applyHeaderSelectionRangeRuntime,
   bindHeaderSelectionEvents as bindHeaderSelectionEventsRuntime,
@@ -244,6 +261,13 @@ import {
   startHeaderSelectionDrag as startHeaderSelectionDragRuntime,
   updateAxisHeaderHighlight as updateAxisHeaderHighlightRuntime,
 } from './selection-runtime.js';
+import {
+  downloadRegionRecording as downloadRegionRecordingRuntime,
+  setupRegionRecordingControls as setupRegionRecordingControlsRuntime,
+  startRegionRecording as startRegionRecordingRuntime,
+  stopRegionRecording as stopRegionRecordingRuntime,
+  syncRegionRecordingControls as syncRegionRecordingControlsRuntime,
+} from './region-recording-runtime.js';
 
 var REPORT_TAB_ID = 'report';
 
@@ -275,6 +299,45 @@ function parseStructuredChannelSendMessage(message) {
   } catch (e) {
     return null;
   }
+}
+
+function parseChannelCommandCellInput(rawValue) {
+  var raw = String(rawValue == null ? '' : rawValue).trim();
+  if (!raw) return null;
+  var spill = false;
+  if (raw.charAt(0) === '>') {
+    spill = true;
+    raw = raw.substring(1).trim();
+  }
+  var command = parseChannelSendCommand(raw);
+  if (!command) return null;
+  return {
+    spill: spill,
+    label: String(command.label || '').trim().toLowerCase(),
+    message: String(command.message || ''),
+  };
+}
+
+function getChannelCommandResultText(result, fallbackLabel) {
+  var source = result && typeof result === 'object' ? result : {};
+  var stdout = String(source.stdout || '').trim();
+  if (stdout) return stdout;
+  var body = String(source.body || source.text || source.value || '').trim();
+  if (body) return body;
+  var stderr = String(source.stderr || '').trim();
+  if (stderr) return stderr;
+  var message = String(source.message || '').trim();
+  if (message) return message;
+  return `Sent to /${String(fallbackLabel || '').trim()}`;
+}
+
+function splitChannelCommandResultLines(text) {
+  return String(text == null ? '' : text)
+    .split(/\r?\n/)
+    .map(function (line) {
+      return String(line || '').trim();
+    })
+    .filter(Boolean);
 }
 
 export class SpreadsheetApp {
@@ -373,9 +436,23 @@ export class SpreadsheetApp {
     );
     this.cellBoldButton = document.querySelector('#cell-bold');
     this.cellItalicButton = document.querySelector('#cell-italic');
+    this.regionRecordingCluster = document.querySelector(
+      '#region-recording-controls',
+    );
+    this.recordRegionButton = document.querySelector('#record-region');
+    this.regionRecordingButtonLabel = document.querySelector(
+      '#record-region-label',
+    );
+    this.downloadRegionRecordingButton = document.querySelector(
+      '#download-region-recording',
+    );
     this.undoButton = document.querySelector('#undo-action');
     this.redoButton = document.querySelector('#redo-action');
     this.updateAIButton = document.querySelector('#update-ai');
+    this.assistantChatButton = document.querySelector('#assistant-chat-button');
+    this.formulaTrackerButton = document.querySelector(
+      '#formula-tracker-button',
+    );
     this.tabsContainer = document.querySelector('#tabs');
     this.addTabButton = document.querySelector('#add-tab');
     this.deleteTabButton = document.querySelector('#delete-tab');
@@ -467,6 +544,14 @@ export class SpreadsheetApp {
     this.historyGroupAt = 0;
     this.historyGroupWindowMs = 1200;
     this.isApplyingHistory = false;
+    this.regionRecordingState = null;
+    this.regionRecordingGifUrl = '';
+    this.regionRecordingFilename = '';
+    this.regionRecordingDownloadReady = false;
+    this.regionRecordingResultSelectionKey = '';
+    this.regionRecordingLastSelectionKey = '';
+    this.regionRecordingStatus = '';
+    this.regionRecordingTimerId = null;
 
     this.setupColumnSort();
     this.setupGridResizing();
@@ -475,6 +560,7 @@ export class SpreadsheetApp {
     this.setupDisplayModeControls();
     this.setupCellFormatControls();
     this.setupCellPresentationControls();
+    this.setupRegionRecordingControls();
     this.setupCellNameControls();
     this.setupAttachmentControls();
     this.setupReportControls();
@@ -484,6 +570,9 @@ export class SpreadsheetApp {
     this.setupMentionAutocomplete();
     this.setupFullscreenOverlay();
     this.setupContextMenu();
+    this.setupScheduleDialog();
+    this.setupAssistantPanel();
+    this.setupFormulaTrackerPanel();
     this.setupAttachmentLinkPreview();
     this.startUncomputedMonitor();
 
@@ -574,6 +663,9 @@ export class SpreadsheetApp {
   setupCellPresentationControls() {
     setupCellPresentationControlsRuntime(this);
   }
+  setupRegionRecordingControls() {
+    setupRegionRecordingControlsRuntime(this);
+  }
 
   hasPendingLocalEdit() {
     if (this.activeInput && this.isEditingCell(this.activeInput)) return true;
@@ -609,10 +701,31 @@ export class SpreadsheetApp {
     );
   }
 
+  hasRegionSelection() {
+    if (!this.activeInput || !this.selectionRange) return false;
+    return !this.hasSingleSelectedCell();
+  }
+
   syncAttachButtonState() {
     if (!this.attachFileButton) return;
     this.attachFileButton.disabled =
       this.isReportActive() || !this.hasSingleSelectedCell();
+  }
+
+  syncRegionRecordingControls() {
+    syncRegionRecordingControlsRuntime(this);
+  }
+
+  startRegionRecording() {
+    startRegionRecordingRuntime(this);
+  }
+
+  stopRegionRecording(shouldDownload) {
+    stopRegionRecordingRuntime(this, shouldDownload);
+  }
+
+  downloadRegionRecording() {
+    downloadRegionRecordingRuntime(this);
   }
 
   parseAttachmentSource(rawValue) {
@@ -749,6 +862,10 @@ export class SpreadsheetApp {
     if (this.formulaBar) this.formulaBar.style.display = 'flex';
     if (this.nameBar) this.nameBar.style.display = 'flex';
     this.deleteTabButton.disabled = report;
+    if (report && this.regionRecordingState && this.regionRecordingState.isRecording) {
+      this.stopRegionRecording(true);
+    }
+    this.syncRegionRecordingControls();
   }
 
   getRawCellValue(cellId) {
@@ -763,12 +880,13 @@ export class SpreadsheetApp {
     return this.storage.getCellPresentation(this.activeSheetId, cellId);
   }
 
-  setRawCellValue(cellId, value, meta) {
+   setRawCellValue(cellId, value, meta) {
     var normalizedCellId = String(cellId || '').toUpperCase();
     var nextRaw = String(value == null ? '' : value);
     var previousRaw = String(
       this.storage.getCellValue(this.activeSheetId, normalizedCellId) || '',
     );
+
     if (
       this.isGeneratedAIResultSourceRaw(previousRaw) &&
       previousRaw !== nextRaw
@@ -779,7 +897,17 @@ export class SpreadsheetApp {
         previousRaw,
       );
     }
-    this.storage.setCellValue(this.activeSheetId, normalizedCellId, nextRaw, meta);
+
+    this.storage.setCellValue(
+      this.activeSheetId,
+      normalizedCellId,
+      nextRaw,
+      meta,
+    );
+  }
+
+  getCellSchedule(cellId) {
+    return this.storage.getCellSchedule(this.activeSheetId, cellId);
   }
 
   setCellFormat(cellId, format) {
@@ -790,6 +918,10 @@ export class SpreadsheetApp {
   setCellPresentation(cellId, presentation) {
     this.storage.setCellPresentation(this.activeSheetId, cellId, presentation);
     this.syncCellPresentationControls();
+  }
+
+  setCellSchedule(cellId, schedule) {
+    this.storage.setCellSchedule(this.activeSheetId, cellId, schedule);
   }
 
   getWorkbookAdapter() {
@@ -1970,6 +2102,10 @@ export class SpreadsheetApp {
       this.pasteFromClipboard();
       return;
     }
+    if (action === 'schedule') {
+      this.showScheduleDialogForContextCell();
+      return;
+    }
 
     if (action === 'insert-row-before') {
       this.insertRowsAtContext('before');
@@ -2034,6 +2170,52 @@ export class SpreadsheetApp {
 
   setupAIModeControls() {
     setupAIModeControlsRuntime(this);
+  }
+
+  setupScheduleDialog() {
+    setupScheduleDialogRuntime(this);
+  }
+
+  setupAssistantPanel() {
+    setupAssistantPanelRuntime(this);
+  }
+
+  setupFormulaTrackerPanel() {
+    setupFormulaTrackerPanelRuntime(this);
+  }
+
+  toggleAssistantPanel() {
+    toggleAssistantPanelRuntime(this);
+    this.refreshFormulaTrackerPanel();
+  }
+
+  hideAssistantPanel() {
+    hideAssistantPanelRuntime(this);
+    this.refreshFormulaTrackerPanel();
+  }
+
+  toggleFormulaTrackerPanel() {
+    toggleFormulaTrackerPanelRuntime(this);
+  }
+
+  hideFormulaTrackerPanel() {
+    hideFormulaTrackerPanelRuntime(this);
+  }
+
+  refreshFormulaTrackerPanel() {
+    refreshFormulaTrackerPanelRuntime(this);
+  }
+
+  showScheduleDialogForCell(cellId) {
+    showScheduleDialogForCellRuntime(this, cellId);
+  }
+
+  showScheduleDialogForContextCell() {
+    showScheduleDialogForContextCellRuntime(this);
+  }
+
+  hideScheduleDialog() {
+    hideScheduleDialogRuntime(this);
   }
 
   setupAttachmentControls() {

@@ -86,6 +86,7 @@ export async function createBinaryArtifact({
   const storagePath = `${binaryDir}/${hash}`;
   await fs.mkdir(binaryDir, { recursive: true });
   await fs.writeFile(storagePath, buffer);
+  const size = Buffer.from(normalizedBase64, 'base64').length;
   const doc = {
     _id: randomUUID(),
     kind: 'binary',

@@ -70,6 +70,24 @@ export function compareSortValues(app, a, b, direction) {
   return cmp < 0 ? -1 * multiplier : 1 * multiplier;
 }
 
+function readCellTransferState(app, cellId) {
+  if (!cellId) return null;
+  return {
+    raw: app.getRawCellValue(cellId),
+    schedule: app.getCellSchedule(cellId),
+  };
+}
+
+function writeCellTransferState(app, cellId, state) {
+  var next = state && typeof state === 'object' ? state : null;
+  app.setCellSchedule(cellId, next ? next.schedule || null : null);
+  app.setRawCellValue(
+    cellId,
+    next ? next.raw || '' : '',
+    { preserveSchedule: true },
+  );
+}
+
 export function toggleSortByColumn(app, colIndex) {
   var state = app.getSortState();
   var current = state[colIndex];
@@ -123,12 +141,18 @@ export function sortRowsByColumn(app, colIndex, direction, skipCompute) {
     var dRow = targetRow - source.sourceRowIndex;
     for (var col = 1; col < colCount; col++) {
       var targetCellId = app.cellIdFrom(col, targetRow);
-      var rawValue = source.raw[col] || '';
+      var sourceState = source.raw[col] || null;
+      var rawValue = sourceState && typeof sourceState.raw === 'string'
+        ? sourceState.raw
+        : '';
       var nextValue =
         rawValue.charAt(0) === '='
           ? app.shiftFormulaReferences(rawValue, dRow, 0)
           : rawValue;
-      app.setRawCellValue(targetCellId, nextValue);
+      writeCellTransferState(app, targetCellId, {
+        raw: nextValue,
+        schedule: sourceState ? sourceState.schedule || null : null,
+      });
     }
   }
 

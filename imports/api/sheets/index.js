@@ -72,6 +72,142 @@ function stripChannelMentionsFromPrompt(text) {
     .trim();
 }
 
+function inferChannelFeedFilterMode(promptText) {
+  const prompt = String(promptText || '').trim().toLowerCase();
+  if (!prompt) return 'pass-through';
+  if (
+    /\b(only|include only|filter|matching|matches|if\b|when\b|where\b|unless|exclude|skip|payment request|invoice|urgent|overdue|requirement|criteria)\b/.test(
+      prompt,
+    )
+  ) {
+    return 'ai-filter';
+  }
+  return 'pass-through';
+}
+
+function inferChannelFeedExpectedFields(promptText) {
+  const prompt = String(promptText || '').trim().toLowerCase();
+  const fields = [];
+  const add = (name, meaning) => {
+    if (!name) return;
+    if (fields.some((item) => item && item.name === name)) return;
+    fields.push({ name, meaning });
+  };
+
+  add('summary', 'Short human-readable summary of the matching event');
+
+  if (/\b(payment request|invoice|billing|pay|overdue|amount|bank|iban)\b/.test(prompt)) {
+    add('requestType', 'Type of payment-related request, such as invoice or payment reminder');
+    add('amount', 'Requested amount if present');
+    add('currency', 'Currency code or symbol if present');
+    add('dueDate', 'Due date if mentioned');
+    add('invoiceNumber', 'Invoice or billing reference if present');
+    add('counterparty', 'Sender, vendor, or customer requesting payment');
+    add('reason', 'Why the event matched the payment-related criteria');
+  }
+
+  if (/\b(urgent|priority|asap|immediately|important|critical)\b/.test(prompt)) {
+    add('priority', 'Priority level inferred from the message');
+    add('urgencyReason', 'Why the message should be treated as urgent');
+    add('deadline', 'Deadline or time sensitivity if mentioned');
+  }
+
+  if (/\b(action item|todo|task|follow up|follow-up|next step)\b/.test(prompt)) {
+    add('actionItem', 'Concrete next action extracted from the event');
+    add('owner', 'Likely owner or responsible person if identifiable');
+    add('deadline', 'Deadline for the action if present');
+    add('status', 'Initial task status such as new or pending');
+  }
+
+  if (/\b(lead|prospect|sales|deal|opportunity)\b/.test(prompt)) {
+    add('company', 'Company or account name');
+    add('contact', 'Primary contact name or email if present');
+    add('stage', 'Sales stage or inferred opportunity stage');
+    add('interest', 'What the lead is interested in');
+  }
+
+  if (/\b(support|incident|bug|issue|ticket|complaint)\b/.test(prompt)) {
+    add('issueType', 'Type of issue or support request');
+    add('severity', 'Severity or impact level');
+    add('customer', 'Customer or reporter');
+    add('product', 'Affected product or area if present');
+  }
+
+  if (/\b(meeting|call|appointment|schedule)\b/.test(prompt)) {
+    add('meetingDate', 'Meeting or appointment date');
+    add('meetingTime', 'Meeting or appointment time');
+    add('participants', 'Participants if present');
+    add('location', 'Meeting location or link');
+  }
+
+  if (!fields.some((item) => item.name === 'reason')) {
+    add('reason', 'Why the event matched or was included');
+  }
+
+  return fields;
+}
+
+function buildChannelFeedDecisionSystemPrompt(task) {
+  const filterMode =
+    task && typeof task.filterMode === 'string' ? task.filterMode : 'pass-through';
+  const expectedFields =
+    task && Array.isArray(task.expectedFields) ? task.expectedFields : [];
+  const guidance =
+    filterMode === 'ai-filter'
+      ? 'Set include=true only when the event clearly matches the requested filter or criteria. Set include=false when it does not match.'
+      : 'Set include=true for any event that produces a useful output. Set include=false only when the event is irrelevant or produces no meaningful result.';
+  return [
+    'You are processing one channel event for a MetaCells channel-feed formula.',
+    'Return JSON only.',
+    'Schema: {"include":boolean,"value":"string","attributes":object}.',
+    guidance,
+    'value must be the row text that should be written into the spill region when include=true.',
+    'attributes should contain any structured labels, extracted facts, or classification fields that you inferred from the event.',
+    expectedFields.length
+      ? `When the event matches, include these attribute fields when possible: ${expectedFields
+          .map((field) => `${field.name} (${field.meaning})`)
+          .join(', ')}.`
+      : 'When the event matches, return the most relevant structured attributes for the event in attributes.',
+    expectedFields.length
+      ? `Shape value as a compact row summary that prioritizes: ${expectedFields
+          .map((field) => field.name)
+          .join(', ')}.`
+      : 'Shape value as a compact row summary of the event.',
+    'Do not include markdown fences or extra prose.',
+  ].join(' ');
+}
+
+function parseChannelFeedDecisionResponse(text) {
+  const raw = String(text || '').trim();
+  if (!raw) {
+    return { include: false, value: '', attributes: {} };
+  }
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (match) {
+    try {
+      const parsed = JSON.parse(match[0]);
+      return {
+        include:
+          Object.prototype.hasOwnProperty.call(parsed || {}, 'include')
+            ? parsed.include !== false
+            : !!String(parsed && (parsed.value || parsed.message || '')).trim(),
+        value: String(
+          parsed && (parsed.value ?? parsed.message ?? parsed.response ?? ''),
+        ).trim(),
+        attributes:
+          parsed && parsed.attributes && typeof parsed.attributes === 'object'
+            ? parsed.attributes
+            : {},
+      };
+    } catch (error) {}
+  }
+  return {
+    include: true,
+    value: raw,
+    attributes: {},
+  };
+}
+
 function buildChannelFeedWindowStart(days) {
   const totalDays = Math.max(1, parseInt(days, 10) || 1);
   if (totalDays <= 1) return startOfToday();
@@ -678,6 +814,14 @@ function collectChannelBatchTasks(
         rowsLimit,
         days,
         includeAttachments,
+        filterMode:
+          formulaKind === 'channel-feed'
+            ? inferChannelFeedFilterMode(promptTemplate)
+            : 'pass-through',
+        expectedFields:
+          formulaKind === 'channel-feed'
+            ? inferChannelFeedExpectedFields(promptTemplate)
+            : [],
       });
     });
   });
@@ -805,6 +949,36 @@ async function runChannelBatchForWorkbook({
             appendBelowExisting: shouldAppend,
           },
         );
+        if (!shouldAppend) {
+          storageService.clearGeneratedCellsBySource(task.sheetId, task.cellId);
+          formulaEngine.fillUnderneathCells(
+            task.sheetId,
+            task.cellId,
+            values,
+            0,
+          );
+        } else {
+          const source = formulaEngine.parseCellId(task.cellId);
+          const existing =
+            storageService.listGeneratedCellsBySource(
+              task.sheetId,
+              task.cellId,
+            ) || [];
+          let maxRow = source ? source.row : 0;
+          existing.forEach((cellId) => {
+            const parsedCell = formulaEngine.parseCellId(cellId);
+            if (parsedCell && parsedCell.row > maxRow) maxRow = parsedCell.row;
+          });
+          const colLabel = source
+            ? formulaEngine.columnIndexToLabel(source.col)
+            : 'A';
+          for (let i = 0; i < values.length; i += 1) {
+            const targetCellId = `${colLabel}${maxRow + i + 1}`;
+            storageService.setCellValue(task.sheetId, targetCellId, values[i], {
+              generatedBy: task.cellId,
+            });
+          }
+        }
       } else if (task.formulaKind === 'table') {
         const rows = Array.isArray(item.rows) ? item.rows : [];
         formulaEngine.spillMatrixToSheet(task.sheetId, task.cellId, rows, {
@@ -852,11 +1026,16 @@ async function runChannelBatchForWorkbook({
       sheetId: task.sheetId,
       cellId: task.cellId,
       days: task.days,
+      filterMode: task.filterMode,
       shouldAppend,
       events: eventDocs.length,
     });
     const values = [];
     let latestProcessedEventId = previousEventId;
+    let lastDecisionAttributes = {};
+    let lastDecisionValue = '';
+    let lastEvaluatedEventId = previousEventId;
+    let lastIncludedEventId = previousEventId;
 
     for (let eventIndex = 0; eventIndex < eventDocs.length; eventIndex += 1) {
       const eventPayload = eventDocs[eventIndex];
@@ -884,6 +1063,10 @@ async function runChannelBatchForWorkbook({
       if (!finalPrompt) continue;
       const responseText = await enqueueAIChatRequest(
         [
+          {
+            role: 'system',
+            content: buildChannelFeedDecisionSystemPrompt(task),
+          },
           ...(prepared.systemPrompt
             ? [{ role: 'system', content: String(prepared.systemPrompt) }]
             : []),
@@ -902,6 +1085,28 @@ async function runChannelBatchForWorkbook({
         },
         { timeoutMs: 180000 },
       );
+      const decision = parseChannelFeedDecisionResponse(responseText);
+      const eventId = String(eventPayload.eventId || eventPayload._id || '');
+      lastEvaluatedEventId = eventId || lastEvaluatedEventId;
+      lastDecisionAttributes =
+        decision && decision.attributes && typeof decision.attributes === 'object'
+          ? decision.attributes
+          : {};
+      lastDecisionValue = String(
+        decision && decision.value ? decision.value : '',
+      ).trim();
+      if (decision.include !== true || !lastDecisionValue) {
+        console.log('[channel-feed] task.skip', {
+          sheetDocumentId,
+          sheetId: task.sheetId,
+          cellId: task.cellId,
+          eventId,
+          filterMode: task.filterMode,
+          attributes: lastDecisionAttributes,
+        });
+        latestProcessedEventId = eventId || latestProcessedEventId;
+        continue;
+      }
       const markdown = buildAttachmentLinksMarkdown(
         getChannelAttachmentLinkEntries(eventPayload, {
           includeAttachments: !!task.includeAttachments,
@@ -975,6 +1180,16 @@ async function runChannelBatchForWorkbook({
       lastProcessedChannelEventIds: latestProcessedEventId
         ? { [target]: latestProcessedEventId }
         : {},
+      channelFeedMeta: {
+        filterMode: String(task.filterMode || 'pass-through'),
+        decisionMode: 'ai-envelope',
+        promptTemplate: String(task.promptTemplate || ''),
+        lastDecisionAt: new Date().toISOString(),
+        lastEvaluatedEventId: String(lastEvaluatedEventId || ''),
+        lastIncludedEventId: String(lastIncludedEventId || ''),
+        lastValuePreview: String(lastDecisionValue || '').slice(0, 500),
+        lastAttributes: lastDecisionAttributes,
+      },
     });
   }
 
@@ -1067,6 +1282,34 @@ registerAIQueueSheetRuntimeHooks({
     return decodeWorkbookDocument(sheetDocument.workbook || {});
   },
 });
+
+async function syncWorkbookSchedulesAfterPersist(payload, logMessage) {
+  try {
+    const module = await import('../schedules/index.js');
+    if (
+      module &&
+      typeof module.syncWorkbookSchedulesOnSave === 'function'
+    ) {
+      await module.syncWorkbookSchedulesOnSave(payload);
+    }
+  } catch (error) {
+    console.error(logMessage, error);
+  }
+}
+
+async function removeWorkbookSchedulesAfterDelete(sheetId) {
+  try {
+    const module = await import('../schedules/index.js');
+    if (
+      module &&
+      typeof module.removeWorkbookSchedulesAndJobs === 'function'
+    ) {
+      await module.removeWorkbookSchedulesAndJobs(sheetId);
+    }
+  } catch (error) {
+    console.error('Failed to remove workbook schedules during delete', error);
+  }
+}
 
 if (Meteor.isServer) {
   Meteor.startup(async () => {
@@ -1165,6 +1408,7 @@ if (Meteor.isServer) {
 
     async 'sheets.remove'(sheetId) {
       check(sheetId, String);
+      await removeWorkbookSchedulesAfterDelete(sheetId);
       await Sheets.removeAsync({ _id: sheetId });
     },
 
@@ -1222,6 +1466,14 @@ if (Meteor.isServer) {
       if (changes.length) {
         await notifyQueuedSheetDependenciesChanged(sheetId, changes);
       }
+      await syncWorkbookSchedulesAfterPersist(
+        {
+          sheetDocumentId: sheetId,
+          previousWorkbook,
+          nextWorkbook: persistedWorkbook,
+        },
+        'Failed to sync workbook schedules after save',
+      );
     },
 
     async 'sheets.computeGrid'(sheetId, activeSheetId, options) {
@@ -1316,6 +1568,14 @@ if (Meteor.isServer) {
           if (changes.length) {
             await notifyQueuedSheetDependenciesChanged(sheetId, changes);
           }
+          await syncWorkbookSchedulesAfterPersist(
+            {
+              sheetDocumentId: sheetId,
+              previousWorkbook: sourceWorkbook,
+              nextWorkbook: persistedNextWorkbook,
+            },
+            'Failed to sync workbook schedules after compute persist',
+          );
           if (profiler)
             profiler.step('persist.done', { changes: changes.length });
         },
@@ -1356,6 +1616,9 @@ if (Meteor.isServer) {
             })()
           : result && result.workbook;
       if (nextWorkbookAfterChannelHistory && result) {
+        const previousWorkbookBeforeChannelHistory = decodeWorkbookDocument(
+          result.workbook || {},
+        );
         result.workbook = nextWorkbookAfterChannelHistory;
         await Sheets.updateAsync(
           { _id: sheetId },
@@ -1372,6 +1635,14 @@ if (Meteor.isServer) {
               storage: '',
             },
           },
+        );
+        await syncWorkbookSchedulesAfterPersist(
+          {
+            sheetDocumentId: sheetId,
+            previousWorkbook: previousWorkbookBeforeChannelHistory,
+            nextWorkbook: nextWorkbookAfterChannelHistory,
+          },
+          'Failed to sync workbook schedules after channel history persist',
         );
       }
       if (profiler)

@@ -2,10 +2,10 @@ import { Meteor } from 'meteor/meteor';
 import { check } from 'meteor/check';
 import { randomUUID } from 'node:crypto';
 import { execFile as execFileCallback } from 'node:child_process';
+import { promisify } from 'node:util';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { enqueueDurableJobAndWait, registerJobHandler } from '../jobs/index.js';
 import { getJobSettingsSync } from '../settings/index.js';
@@ -13,23 +13,20 @@ import {
   buildArtifactPath,
   createBinaryArtifact,
   createTextArtifact,
-  getArtifactBinary,
 } from '../artifacts/index.js';
 
+const execFile = promisify(execFileCallback);
 const APP_ROOT =
   process.env.PWD || path.resolve(process.cwd(), '..', '..', '..', '..');
-const execFile = promisify(execFileCallback);
-const FILE_CONVERTER_MAX_BYTES = 20 * 1024 * 1024;
-const FILE_CONVERTER_CLI = path.join(
+const FILE_CONVERTER_BIN = path.join(
   APP_ROOT,
   'server',
   'tools',
-  'converter',
-  'bin',
-  'file-converter.js',
+  'file-converter',
+  'file-converter',
 );
 const FILE_CONVERTER_TIMEOUT_MS = 60_000;
-const PDFTOTEXT_CLI = '/opt/homebrew/bin/pdftotext';
+const FILE_CONVERTER_MAX_BYTES = 20 * 1024 * 1024;
 
 function sanitizeFilename(name) {
   const raw = String(name || 'attachment');
@@ -70,12 +67,33 @@ function decodeUtf8Fallback(buffer) {
 }
 
 async function runFileConverter(tempFilePath) {
+  const parsed = path.parse(tempFilePath);
+  const markdownFilePath = path.join(parsed.dir, `${parsed.name}.converted.md`);
+
+  try {
+    await execFile(
+      FILE_CONVERTER_BIN,
+      ['convert', tempFilePath, '--output', markdownFilePath],
+      {
+        timeout: FILE_CONVERTER_TIMEOUT_MS,
+        maxBuffer: 20 * 1024 * 1024,
+      },
+    );
+    const markdown = String(await fs.readFile(markdownFilePath, 'utf8')).trim();
+    if (markdown) {
+      return markdown;
+    }
+  } catch (error) {
+    console.log('[files] converter.output_error', {
+      message: error && error.message ? error.message : String(error),
+    });
+  }
+
   try {
     const { stdout } = await execFile(
-      process.execPath,
-      [FILE_CONVERTER_CLI, tempFilePath, '--stdout'],
+      FILE_CONVERTER_BIN,
+      ['convert', tempFilePath, '--stdout'],
       {
-        cwd: APP_ROOT,
         timeout: FILE_CONVERTER_TIMEOUT_MS,
         maxBuffer: 20 * 1024 * 1024,
       },
@@ -85,7 +103,7 @@ async function runFileConverter(tempFilePath) {
       return markdown;
     }
   } catch (error) {
-    console.log('[files] converter.cli_error', {
+    console.log('[files] converter.stdout_error', {
       message: error && error.message ? error.message : String(error),
     });
   }
@@ -227,14 +245,12 @@ if (Meteor.isServer) {
       check(base64Data, String);
 
       const ownerId = createHash('sha256')
+      const dedupeHash = createHash('sha256')
         .update(
           `${String(fileName || '')}\n${String(mimeType || '')}\n${String(base64Data || '')}`,
         )
         .digest('hex');
-      const owner = {
-        ownerType: 'workbook-attachment',
-        ownerId,
-      };
+     
       const binaryArtifact = await createBinaryArtifact({
         base64Data,
         mimeType,
@@ -242,14 +258,15 @@ if (Meteor.isServer) {
         owner,
       });
 
-      const dedupeHash = createHash('sha256')
-        .update(String((binaryArtifact && binaryArtifact._id) || ''))
-        .digest('hex');
+ 
       const content = await enqueueDurableJobAndWait(
         {
           type: 'files.extract_content',
           payload: {
             binaryArtifactId: String((binaryArtifact && binaryArtifact._id) || ''),
+            fileName,
+            mimeType,
+            base64Data,
           },
           dedupeKey: `files.extract_content:${dedupeHash}`,
           maxAttempts: 3,
@@ -259,6 +276,16 @@ if (Meteor.isServer) {
           timeoutMs: 180_000,
         },
       );
+
+      const owner = {
+        ownerType: 'workbook-attachment',
+        ownerId: createHash('sha256')
+          .update(
+            `${String(fileName || '')}\n${String(mimeType || '')}\n${String(base64Data || '')}`,
+          )
+          .digest('hex'),
+      };
+    
       const contentArtifact = await createTextArtifact({
         text: String(content || ''),
         mimeType: 'text/plain; charset=utf-8',

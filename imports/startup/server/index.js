@@ -11,9 +11,11 @@ import { getJobSettingsSync } from '../../api/settings/index.js';
 import { getRuntimeRole, isWorkerRuntime } from './runtime-role.js';
 import '../../api/artifacts/index.js';
 import '../../api/ai/index.js';
+import '../../api/assistant/index.js';
 import { startChannelPollingWorker } from '../../api/channels/server/index.js';
 import '../../api/files/index.js';
 import '../../api/jobs/index.js';
+import '../../api/schedules/index.js';
 import '../../api/settings/index.js';
 import '../../api/sheets/index.js';
 

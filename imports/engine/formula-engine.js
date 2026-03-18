@@ -5,6 +5,7 @@ import { recalcMethods } from './formula-engine/recalc-methods.js';
 import { parserMethods } from './formula-engine/parser-methods.js';
 import { referenceMethods } from './formula-engine/reference-methods.js';
 import { schedulerMethods } from './formula-engine/scheduler-methods.js';
+import { fallbackMethods } from './formula-engine/fallback-methods.js';
 import { buildFormulaContext } from './formulas/index.js';
 
 export class FormulaEngine {
@@ -245,14 +246,25 @@ export class FormulaEngine {
         'context',
         'with (context) { return (' + expression + '); }',
       );
-      var result = fn(context);
-      if (
-        equalFormulaSpec.placeholder &&
-        String(result == null ? '' : result) === ''
-      ) {
-        this.setDisplayPlaceholder(options, equalFormulaSpec.placeholder);
+      try {
+        return fn(context);
+      } catch (error) {
+        var unknownFunctions = this.shouldUseUnknownFormulaFallback(
+          raw.substring(1),
+          context,
+          error,
+        );
+        if (unknownFunctions && unknownFunctions.length) {
+          return this.evaluateUnknownFormulaFallback(
+            sheetId,
+            cellId,
+            raw,
+            unknownFunctions,
+            options,
+          );
+        }
+        throw error;
       }
-      return result;
     } finally {
       delete stack[token];
     }
@@ -586,4 +598,5 @@ Object.assign(
   parserMethods,
   referenceMethods,
   schedulerMethods,
+  fallbackMethods,
 );

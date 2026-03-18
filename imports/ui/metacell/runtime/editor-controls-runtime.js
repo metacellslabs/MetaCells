@@ -1284,6 +1284,9 @@ export function syncCellFormatControl(app) {
 }
 
 export function syncCellPresentationControls(app) {
+  if (app && typeof app.syncRegionRecordingControls === 'function') {
+    app.syncRegionRecordingControls();
+  }
   var disabled = !app.activeInput || app.isReportActive();
   var presentation = disabled
     ? {

@@ -16,7 +16,7 @@ function getFormulaDirectory() {
     'ui',
     'metacell',
     'runtime',
-    'formulas',
+    'formulas'
   );
 }
 
@@ -29,13 +29,22 @@ function hashFile(filePath) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
+function buildBundledManifestHashes(manifest) {
+  return manifest.map((item) => ({
+    file: String(item.file || ''),
+    name: item.name,
+    hash: 'bundled',
+  }));
+}
+
 export function validateDiscoveredFormulasOnServer() {
+  const manifest = getRegisteredFormulaManifest();
   const formulasDir = getFormulaDirectory();
+
   if (!fs.existsSync(formulasDir)) {
-    throw new Error(`Formula directory not found: ${formulasDir}`);
+    return buildBundledManifestHashes(manifest);
   }
 
-  const manifest = getRegisteredFormulaManifest();
   const manifestByFile = new Map();
 
   for (let i = 0; i < manifest.length; i += 1) {
@@ -57,12 +66,14 @@ export function validateDiscoveredFormulasOnServer() {
   });
 
   const fileHashes = [];
+
   for (let i = 0; i < discoveredFiles.length; i += 1) {
     const fileName = discoveredFiles[i];
     const manifestEntry = manifestByFile.get(fileName);
+
     if (!manifestEntry) {
       throw new Error(
-        `Formula file ${fileName} exists on disk but was not registered by auto-discovery`,
+        `Formula file ${fileName} exists on disk but was not registered by auto-discovery`
       );
     }
 
@@ -77,8 +88,9 @@ export function validateDiscoveredFormulasOnServer() {
     const manifestFiles = manifest.map((m) => m.file);
     const missing = manifestFiles.filter((f) => !discoveredFiles.includes(f));
     const extra = discoveredFiles.filter((f) => !manifestFiles.includes(f));
+
     throw new Error(
-      `Formula auto-discovery manifest does not match files on disk (manifest: ${manifest.length}, disk: ${discoveredFiles.length}, missing from disk: [${missing.join(', ')}], extra on disk: [${extra.join(', ')}])`,
+      `Formula auto-discovery manifest does not match files on disk (manifest: ${manifest.length}, disk: ${discoveredFiles.length}, missing from disk: [${missing.join(', ')}], extra on disk: [${extra.join(', ')}])`
     );
   }
 

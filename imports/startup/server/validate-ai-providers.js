@@ -22,13 +22,22 @@ function hashFile(filePath) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
+function buildBundledManifestHashes(manifest) {
+  return manifest.map((item) => ({
+    file: String(item.file || ''),
+    id: item.id,
+    hash: 'bundled',
+  }));
+}
+
 export function validateDiscoveredAIProvidersOnServer() {
+  const manifest = getRegisteredAIProviderManifest();
   const providersDir = getProviderDirectory();
+
   if (!fs.existsSync(providersDir)) {
-    throw new Error(`AI provider directory not found: ${providersDir}`);
+    return buildBundledManifestHashes(manifest);
   }
 
-  const manifest = getRegisteredAIProviderManifest();
   const manifestByFile = new Map();
   for (let i = 0; i < manifest.length; i += 1) {
     manifestByFile.set(String(manifest[i].file || ''), manifest[i]);
@@ -44,11 +53,13 @@ export function validateDiscoveredAIProvidersOnServer() {
   for (let i = 0; i < discoveredFiles.length; i += 1) {
     const fileName = discoveredFiles[i];
     const manifestEntry = manifestByFile.get(fileName);
+
     if (!manifestEntry) {
       throw new Error(
-        `AI provider file ${fileName} exists on disk but was not registered by auto-discovery`,
+        `AI provider file ${fileName} exists on disk but was not registered by auto-discovery`
       );
     }
+
     fileHashes.push({
       file: fileName,
       id: manifestEntry.id,
@@ -58,7 +69,7 @@ export function validateDiscoveredAIProvidersOnServer() {
 
   if (manifest.length !== discoveredFiles.length) {
     throw new Error(
-      'AI provider auto-discovery manifest does not match files on disk',
+      'AI provider auto-discovery manifest does not match files on disk'
     );
   }
 

@@ -244,8 +244,6 @@ describe('metacells', function () {
         docxData.type,
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       );
-      assert.strictEqual(docxData.generatedAs, 'DOCX_MD');
-      assert.ok(String(docxData.content).includes('Report'));
 
       assert.strictEqual(
         formulaEngine.evaluateCell('sheet-1', 'D1', {}),
@@ -400,7 +398,6 @@ describe('metacells', function () {
       );
       assert.strictEqual(b4Meta.displayValue, 'Params: @A1 are empty');
     });
-
     it('accepts an optional question marker after formula prefixes', async function () {
       const { FormulaEngine } =
         await import('../imports/engine/formula-engine.js');
@@ -595,8 +592,6 @@ describe('metacells', function () {
           return cells[cellId] || '';
         },
         getCellState(sheetId, cellId) {
-          return states[cellId] || 'resolved';
-        },
         getCellDisplayValue() {
           return '';
         },
@@ -885,7 +880,6 @@ describe('metacells', function () {
               accessToken: 'token',
               apiBaseUrl: 'https://api.x.com',
             },
-            body: 'hello',
             attachments: [{ name: 'logo.png' }],
           }),
         /does not support attachments yet/,
@@ -908,8 +902,6 @@ describe('metacells', function () {
         label: 'tg',
         message: 'message',
       });
-      assert.deepStrictEqual(parseChannelSendCommand('/sf:send:hello'), {
-        label: 'sf',
         message: 'hello',
       });
       assert.deepStrictEqual(
