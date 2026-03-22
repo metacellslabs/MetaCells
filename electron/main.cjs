@@ -580,7 +580,7 @@ function createWindow() {
     backgroundColor: '#ffffff',
     icon: getAppIconPath(),
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -653,6 +653,11 @@ function waitForPort(port, timeoutMs) {
   });
 }
 
+function tailText(value, maxChars = 4000) {
+  if (!value) return '';
+  return value.length > maxChars ? value.slice(-maxChars) : value;
+}
+
 async function waitForHttp(url, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -673,14 +678,59 @@ async function waitForHttp(url, timeoutMs) {
   throw new Error(`Timed out waiting for ${url}`);
 }
 
-function pipeLogs(logPath, child, name) {
+function monitorProcessLogs(logPath, child, name) {
   const stream = fs.createWriteStream(logPath, { flags: 'a' });
-  if (child.stdout) child.stdout.pipe(stream);
-  if (child.stderr) child.stderr.pipe(stream);
+  let outputTail = '';
+  let isClosed = false;
+
+  const appendChunk = (chunk) => {
+    const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+    outputTail = tailText(outputTail + text);
+    if (!isClosed) {
+      stream.write(text);
+    }
+  };
+
+  if (child.stdout) {
+    child.stdout.on('data', appendChunk);
+  }
+  if (child.stderr) {
+    child.stderr.on('data', appendChunk);
+  }
   child.on('exit', (code, signal) => {
-    stream.write(`\n[${name}] exited code=${code} signal=${signal}\n`);
-    stream.end();
+    isClosed = true;
+    if (child.stdout) {
+      child.stdout.off('data', appendChunk);
+    }
+    if (child.stderr) {
+      child.stderr.off('data', appendChunk);
+    }
+    stream.end(`\n[${name}] exited code=${code} signal=${signal}\n`);
   });
+
+  return {
+    logPath,
+    getOutputTail() {
+      return outputTail.trim();
+    },
+  };
+}
+
+function terminateProcess(child) {
+  if (!child || child.killed) return;
+
+  if (process.platform === 'win32') {
+    child.kill();
+    if (child.exitCode == null) {
+      spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      }).unref();
+    }
+    return;
+  }
+
+  child.kill('SIGTERM');
 }
 
 async function startBundledBackend(window, runtimeRoot) {
@@ -688,65 +738,64 @@ async function startBundledBackend(window, runtimeRoot) {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const userDataRoot = app.getPath('userData');
   const logsDir = path.join(userDataRoot, 'logs');
-  const mongoDataDir = path.join(userDataRoot, 'mongo-data');
 
   fs.mkdirSync(logsDir, { recursive: true });
-  fs.mkdirSync(mongoDataDir, { recursive: true });
 
-  const mongoPort = await getFreePort();
   const appPort = await getFreePort();
-  const mongoUrl = `mongodb://127.0.0.1:${mongoPort}/metacells`;
   const appUrl = `http://127.0.0.1:${appPort}`;
+  const sqlitePath = path.join(userDataRoot, 'metacells.db');
 
   showStartupStatus(window, 'database');
-  const mongoBinary = path.join(runtimeRoot, manifest.mongo.binary);
-  const mongoProcess = spawn(
-    mongoBinary,
-    ['--dbpath', mongoDataDir, '--port', String(mongoPort), '--bind_ip', '127.0.0.1', '--nounixsocket'],
-    {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
-  pipeLogs(path.join(logsDir, 'mongodb.log'), mongoProcess, 'mongod');
-  await waitForPort(mongoPort, 30000);
-
   showStartupStatus(window, 'backend');
   const serverEntry = path.join(runtimeRoot, manifest.backend.main);
   const serverProcess = spawn(getBundledNodeLaunchBinary(), [serverEntry], {
     cwd: path.dirname(serverEntry),
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
       PORT: String(appPort),
-      MONGO_URL: mongoUrl,
+      SQLITE_PATH: sqlitePath,
       BIND_IP: '127.0.0.1',
       METACELLS_ROLE: 'web',
       NODE_ENV: 'production',
     },
   });
-  pipeLogs(path.join(logsDir, 'server.log'), serverProcess, 'server');
+  const serverMonitor = monitorProcessLogs(path.join(logsDir, 'server.log'), serverProcess, 'server');
 
   backendState = {
     appUrl,
-    mongoProcess,
     serverProcess,
   };
 
-  await waitForHttp(appUrl, 60000);
+  await Promise.race([
+    waitForHttp(appUrl, 60000),
+    new Promise((_, reject) => {
+      serverProcess.once('exit', (code, signal) => {
+        const outputTail = serverMonitor.getOutputTail();
+        const details = [
+          `server exited before responding on ${appUrl}`,
+          `exit code=${code} signal=${signal}`,
+          `log: ${serverMonitor.logPath}`,
+        ];
+        if (outputTail) {
+          details.push('', outputTail);
+        }
+        reject(new Error(details.join('\n')));
+      });
+    }),
+  ]);
   return appUrl;
 }
 
 function stopBundledBackend() {
   if (!backendState) return;
-  const { serverProcess, mongoProcess } = backendState;
+  const { serverProcess } = backendState;
   backendState = null;
 
   if (serverProcess && !serverProcess.killed) {
-    serverProcess.kill('SIGTERM');
-  }
-  if (mongoProcess && !mongoProcess.killed) {
-    mongoProcess.kill('SIGTERM');
+    terminateProcess(serverProcess);
   }
 }
 

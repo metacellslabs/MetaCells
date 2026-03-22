@@ -1,4 +1,4 @@
-import { Meteor } from '../../../lib/meteor-compat.js';
+import { AppError } from '../../../lib/app-error.js';
 import { check, Match } from '../../../lib/check.js';
 import { registerMethods } from '../../../lib/rpc.js';
 import { FormulaEngine } from '../../engine/formula-engine.js';
@@ -1047,7 +1047,7 @@ registerMethods({
 
     let effectiveUrl = String(baseUrl || '').trim().replace(/\/+$/, '');
     if (!effectiveUrl) {
-      throw new Meteor.Error('invalid-url', 'Base URL is required');
+      throw new AppError('invalid-url', 'Base URL is required');
     }
 
     const alias = String(
@@ -1088,7 +1088,7 @@ registerMethods({
         status: response.status,
         body: body.slice(0, 500),
       });
-      throw new Meteor.Error(
+      throw new AppError(
         'fetch-models-error',
         `HTTP ${response.status}: ${body.slice(0, 200)}`,
       );

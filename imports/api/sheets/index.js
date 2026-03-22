@@ -1,5 +1,5 @@
-import { Collection } from '../../../lib/collections.js';
-import { Meteor } from '../../../lib/meteor-compat.js';
+import { defineModel } from '../../../lib/orm.js';
+import { AppError } from '../../../lib/app-error.js';
 import { check, Match } from '../../../lib/check.js';
 import { registerMethods } from '../../../lib/rpc.js';
 import {
@@ -48,7 +48,7 @@ import {
   buildComputedFormulaTestWorkbook,
 } from './formula-test-workbook.js';
 
-export const Sheets = new Collection('sheets');
+export const Sheets = defineModel('sheets');
 
 const isPlainObject = Match.Where((value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -1394,7 +1394,7 @@ registerMethods({
 
     const nextName = String(name || '').trim();
     if (!nextName) {
-      throw new Meteor.Error('invalid-name', 'Workbook name is required');
+      throw new AppError('invalid-name', 'Workbook name is required');
     }
 
     await Sheets.updateAsync(
@@ -1422,7 +1422,7 @@ registerMethods({
     check(sheetId, String);
     const workbook = await rebuildSheetDependencyGraph(sheetId);
     if (!workbook) {
-      throw new Meteor.Error('not-found', 'Workbook not found');
+      throw new AppError('not-found', 'Workbook not found');
     }
     return { rebuilt: true };
   },
@@ -1495,7 +1495,7 @@ registerMethods({
     if (profiler) profiler.step('normalize.done');
 
     if (!sheetDocument) {
-      throw new Meteor.Error('not-found', 'Workbook not found');
+      throw new AppError('not-found', 'Workbook not found');
     }
 
     const persistedWorkbook = decodeWorkbookDocument(

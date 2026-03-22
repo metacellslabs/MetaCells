@@ -1,6 +1,6 @@
-import { Meteor } from '../../../lib/meteor-compat.js';
+import { AppError } from '../../../lib/app-error.js';
 import { check, Match } from '../../../lib/check.js';
-import { Collection } from '../../../lib/collections.js';
+import { defineModel } from '../../../lib/orm.js';
 import { registerMethods, getMethodHandler } from '../../../lib/rpc.js';
 import { Sheets } from '../sheets/index.js';
 import {
@@ -28,9 +28,7 @@ import {
 } from '../artifacts/index.js';
 
 const assistantToolRegistry = [];
-export const AssistantConversations = new Collection(
-  'assistant_conversations',
-);
+export const AssistantConversations = defineModel('assistant_conversations');
 
 function normalizeToolSlug(value) {
   return String(value || '')
@@ -1433,7 +1431,7 @@ async function handleAssistantChat({
   const sheetId = String(sheetDocumentId || '').trim();
   if (!sheetId) throw new Error('Assistant chat requires sheetDocumentId');
   const sheetDoc = await Sheets.findOneAsync({ _id: sheetId }, { fields: { workbook: 1 } });
-  if (!sheetDoc) throw new Meteor.Error('not-found', 'Workbook not found');
+  if (!sheetDoc) throw new AppError('not-found', 'Workbook not found');
   let workbook = await hydrateWorkbookAttachmentArtifacts(
     decodeWorkbookDocument(workbookSnapshot || sheetDoc.workbook || {}),
   );
@@ -1572,7 +1570,7 @@ registerMethods({
       { _id: sheetDocumentId },
       { fields: { workbook: 1 } },
     );
-    if (!sheetDoc) throw new Meteor.Error('not-found', 'Workbook not found');
+    if (!sheetDoc) throw new AppError('not-found', 'Workbook not found');
     return buildAssistantManifest(
       sheetDocumentId,
       workbookSnapshot || sheetDoc.workbook || {},
@@ -1584,7 +1582,7 @@ registerMethods({
       { _id: sheetDocumentId },
       { fields: { _id: 1 } },
     );
-    if (!sheetDoc) throw new Meteor.Error('not-found', 'Workbook not found');
+    if (!sheetDoc) throw new AppError('not-found', 'Workbook not found');
     const doc = await loadAssistantConversationDoc(sheetDocumentId);
     return {
       messages:
@@ -1607,10 +1605,10 @@ registerMethods({
       { _id: sheetDocumentId },
       { fields: { _id: 1 } },
     );
-    if (!sheetDoc) throw new Meteor.Error('not-found', 'Workbook not found');
+    if (!sheetDoc) throw new AppError('not-found', 'Workbook not found');
     const extractContent = getMethodHandler('files.extractContent');
     if (typeof extractContent !== 'function') {
-      throw new Meteor.Error(
+      throw new AppError(
         'files-unavailable',
         'File extraction method is unavailable',
       );

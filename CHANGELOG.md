@@ -5,7 +5,7 @@
 ### Added
 
 - Electron desktop packaging flow with local desktop preparation, packing, and per-OS distribution scripts.
-- Self-contained desktop runtime support for bundling the Meteor backend and local services into the packaged Electron app.
+- Self-contained desktop runtime support for bundling the backend and local services into the packaged Electron app.
 - Cell scheduling system:
   - backend schedule persistence and execution
   - schedule detection jobs
@@ -15,7 +15,7 @@
   - topbar entry point
   - floating chat panel
   - provider selection
-  - persisted conversation history in Mongo
+  - persisted conversation history in SQLite
   - workbook/tool-aware server orchestration
 - Assistant file uploads with extracted-content context and tools to place uploaded files into workbook cells.
 - Assistant mutation tools for:
@@ -236,17 +236,17 @@
   - [imports/ui/metacell/runtime/structure-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/structure-runtime.js)
   - [imports/ui/metacell/runtime/editor-controls-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/editor-controls-runtime.js)
   - [imports/ui/metacell/runtime/sheet-shell-runtime.js](/Users/zentelechia/playground/thinker/imports/ui/metacell/runtime/sheet-shell-runtime.js)
-- `meteor test --once --port 3188 --driver-package meteortesting:mocha`
+- `test run on port 3188`
   - passed: `24 passing`
-- `meteor test --once --port 3189 --driver-package meteortesting:mocha`
+- `test run on port 3189`
   - passed: `24 passing`
-- `meteor test --once --port 3191 --driver-package meteortesting:mocha`
+- `test run on port 3191`
   - passed: `24 passing`
-- `meteor test --once --port 3192 --driver-package meteortesting:mocha`
+- `test run on port 3192`
   - passed: `24 passing`
-- `meteor test --once --port 3193 --driver-package meteortesting:mocha`
+- `test run on port 3193`
   - passed: `24 passing`
-- `meteor test --once --port 3197 --driver-package meteortesting:mocha`
+- `test run on port 3197`
   - passed: `24 passing`
-- `meteor test --once --port 3198 --driver-package meteortesting:mocha`
+- `test run on port 3198`
   - passed: `24 passing`

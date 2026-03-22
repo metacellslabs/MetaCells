@@ -1,6 +1,6 @@
 import crypto from 'crypto';
-import { Meteor } from '../../../lib/meteor-compat.js';
-import { Collection } from '../../../lib/collections.js';
+import { AppError } from '../../../lib/app-error.js';
+import { defineModel } from '../../../lib/orm.js';
 import { Match, check } from '../../../lib/check.js';
 import { registerMethods } from '../../../lib/rpc.js';
 import {
@@ -24,7 +24,7 @@ import { getActiveChannelPayloadMap } from '../channels/runtime-state.js';
 import { hydrateWorkbookAttachmentArtifacts, stripWorkbookAttachmentInlineData } from '../artifacts/index.js';
 import { computeSheetSnapshot } from '../sheets/server/compute.js';
 
-export const CellSchedules = new Collection('cell_schedules');
+export const CellSchedules = defineModel('cell_schedules');
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);

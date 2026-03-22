@@ -12,7 +12,6 @@ import _REDDIT from './REDDIT.js';
 import _SHELL from './SHELL.js';
 import _TELEGRAM from './TELEGRAM.js';
 import _TWITTER from './TWITTER.js';
-import _WHATSAPP from './WHATSAPP.js';
 
 const ALL_MODULES = {
   './FACEBOOK.js': { default: _FACEBOOK },
@@ -27,7 +26,6 @@ const ALL_MODULES = {
   './SHELL.js': { default: _SHELL },
   './TELEGRAM.js': { default: _TELEGRAM },
   './TWITTER.js': { default: _TWITTER },
-  './WHATSAPP.js': { default: _WHATSAPP },
 };
 
 function formatConnectorCapabilities(connector) {

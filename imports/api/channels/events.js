@@ -1,7 +1,7 @@
-import { Collection } from '../../../lib/collections.js';
+import { defineModel } from '../../../lib/orm.js';
 import { randomUUID } from 'node:crypto';
 
-export const ChannelEvents = new Collection('channel_events');
+export const ChannelEvents = defineModel('channel_events');
 
 function firstNonEmptyString(...values) {
   for (let i = 0; i < values.length; i += 1) {

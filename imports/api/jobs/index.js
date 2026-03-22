@@ -1,12 +1,12 @@
-import { Meteor } from '../../../lib/meteor-compat.js';
-import { Collection } from '../../../lib/collections.js';
+import { AppError } from '../../../lib/app-error.js';
+import { defineModel } from '../../../lib/orm.js';
 import { check, Match } from '../../../lib/check.js';
 import { registerMethods } from '../../../lib/rpc.js';
 import crypto from 'crypto';
 
-export const Jobs = new Collection('jobs');
-export const JobLogs = new Collection('job_logs');
-export const DeadLetterJobs = new Collection('dead_letter_jobs');
+export const Jobs = defineModel('jobs');
+export const JobLogs = defineModel('job_logs');
+export const DeadLetterJobs = defineModel('dead_letter_jobs');
 
 export const JOB_STATUS = {
   QUEUED: 'queued',
@@ -1034,7 +1034,7 @@ registerMethods({
     const now = nowDate();
     const current = await Jobs.findOneAsync(jobId);
     if (!current) {
-      throw new Meteor.Error('job-not-found', 'Job not found');
+      throw new AppError('job-not-found', 'Job not found');
     }
     if (
       [

@@ -1,9 +1,10 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 import { connectToDatabase } from './lib/db.js';
 import { getMethodHandler, getRegisteredMethodNames } from './lib/rpc.js';
-import { Meteor } from './lib/meteor-compat.js';
+import { runStartupHooks } from './lib/startup-hooks.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -82,7 +83,7 @@ async function setupFrontend() {
   if (process.env.NODE_ENV === 'production') {
     const clientDir = path.join(__dirname, 'dist', 'client');
     app.use(express.static(clientDir));
-    app.get('*', (req, res) => {
+    app.get('/{*path}', (req, res) => {
       res.sendFile(path.join(clientDir, 'index.html'));
     });
   } else {
@@ -98,33 +99,20 @@ async function setupFrontend() {
 // --- Start server ---
 const PORT = parseInt(process.env.PORT || '3400', 10);
 
-async function getMongoUrl() {
-  if (process.env.MONGO_URL) return process.env.MONGO_URL;
+function getDatabasePath() {
+  if (process.env.SQLITE_PATH) {
+    return process.env.SQLITE_PATH;
+  }
 
-  // Dev mode: start an embedded MongoDB instance
-  const { MongoMemoryServer } = await import('mongodb-memory-server-core');
-  const dbPath = path.join(__dirname, '.data', 'mongodb');
-  const { mkdirSync } = await import('fs');
-  mkdirSync(dbPath, { recursive: true });
-
-  const mongod = await MongoMemoryServer.create({
-    instance: { dbPath, storageEngine: 'wiredTiger' },
-  });
-  const uri = mongod.getUri();
-  console.log('[dev] embedded MongoDB started at', uri);
-
-  // Graceful shutdown
-  const stop = async () => { await mongod.stop(); process.exit(0); };
-  process.on('SIGINT', stop);
-  process.on('SIGTERM', stop);
-
-  return uri + 'metacells';
+  const dataDir = path.join(__dirname, '.data', 'sqlite');
+  fs.mkdirSync(dataDir, { recursive: true });
+  return path.join(dataDir, 'metacells.db');
 }
 
 async function main() {
   // 1. Connect to MongoDB
-  const MONGO_URL = await getMongoUrl();
-  await connectToDatabase(MONGO_URL);
+  const databasePath = getDatabasePath();
+  await connectToDatabase(databasePath);
 
   // 2. Run startup validation
   const formulaHashes = validateDiscoveredFormulasOnServer();
@@ -149,8 +137,8 @@ async function main() {
   await initSettings();
   await initSheets();
 
-  // 4. Run Meteor-compat startup hooks (from modules that use Meteor.startup)
-  await Meteor._runStartupHooks();
+  // 4. Run startup hooks registered by server modules
+  await runStartupHooks();
 
   // 5. Set up job system
   console.log('[runtime] role', { role: getRuntimeRole() });

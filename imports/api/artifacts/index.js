@@ -1,9 +1,9 @@
-import { Meteor } from '../../../lib/meteor-compat.js';
-import { Collection } from '../../../lib/collections.js';
+import { AppError } from '../../../lib/app-error.js';
+import { defineModel } from '../../../lib/orm.js';
 import { registerMethods } from '../../../lib/rpc.js';
 import { createHash, randomUUID } from 'node:crypto';
 
-export const Artifacts = new Collection('artifacts');
+export const Artifacts = defineModel('artifacts');
 
 export function buildArtifactPath(artifactId) {
   return `/artifacts/${encodeURIComponent(String(artifactId || ''))}`;
@@ -32,7 +32,7 @@ async function getArtifactBinaryStorage() {
   const { promises: fs } = await import('node:fs');
   const appRootRaw = String(process.env.PWD || process.cwd() || '');
   const appRoot = appRootRaw.replace(/\/+$/g, '');
-  const binaryDir = `${appRoot}/.meteor/local/artifacts/binary`;
+  const binaryDir = `${appRoot}/.data/artifacts/binary`;
   return { fs, binaryDir };
 }
 

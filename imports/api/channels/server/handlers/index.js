@@ -3,7 +3,6 @@ import telegramHandler from './telegram.js';
 import twitterHandler from './twitter.js';
 import linkedinHandler from './linkedin.js';
 import redditHandler from './reddit.js';
-import whatsappHandler from './whatsapp.js';
 import githubHandler from './github.js';
 import facebookHandler from './facebook.js';
 import instagramHandler from './instagram.js';
@@ -17,7 +16,6 @@ const CHANNEL_HANDLERS = [
   twitterHandler,
   linkedinHandler,
   redditHandler,
-  whatsappHandler,
   githubHandler,
   facebookHandler,
   instagramHandler,

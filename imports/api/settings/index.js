@@ -1,5 +1,5 @@
-import { Collection } from '../../../lib/collections.js';
-import { Meteor } from '../../../lib/meteor-compat.js';
+import { defineModel } from '../../../lib/orm.js';
+import { AppError } from '../../../lib/app-error.js';
 import { check, Match } from '../../../lib/check.js';
 import { registerMethods } from '../../../lib/rpc.js';
 import {
@@ -16,7 +16,7 @@ import {
 
 export { DEFAULT_AI_PROVIDERS, DEFAULT_CHANNEL_CONNECTORS, DEFAULT_JOB_SETTINGS };
 
-export const AppSettings = new Collection('app_settings');
+export const AppSettings = defineModel('app_settings');
 
 export const DEFAULT_SETTINGS_ID = 'default';
 export const DEFAULT_DEEPSEEK_PROVIDER =
@@ -446,7 +446,7 @@ registerMethods({
     const providers = normalizeProviders(current && current.aiProviders);
     const exists = providers.some((item) => item && item.id === providerId);
     if (!exists) {
-      throw new Meteor.Error('provider-not-found', 'AI provider not found');
+      throw new AppError('provider-not-found', 'AI provider not found');
     }
 
     await AppSettings.updateAsync(
@@ -507,7 +507,7 @@ registerMethods({
     await ensureDefaultSettings();
     const connector = getDefaultChannelConnectorById(connectorId);
     if (!connector) {
-      throw new Meteor.Error(
+      throw new AppError(
         'channel-connector-not-found',
         'Communication channel connector not found',
       );

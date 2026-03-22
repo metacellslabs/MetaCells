@@ -1,4 +1,4 @@
-import { Meteor } from '../../../lib/meteor-compat.js';
+import { AppError } from '../../../lib/app-error.js';
 import { check } from '../../../lib/check.js';
 import { registerMethods } from '../../../lib/rpc.js';
 import { randomUUID } from 'node:crypto';
@@ -147,10 +147,10 @@ export async function extractFileContentWithConverter({
   const normalizedName = String(fileName || 'attachment');
   const decoded = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
   if (!decoded.length) {
-    throw new Meteor.Error('files-empty', 'Attached file is empty');
+    throw new AppError('files-empty', 'Attached file is empty');
   }
   if (decoded.length > FILE_CONVERTER_MAX_BYTES) {
-    throw new Meteor.Error('files-too-large', 'Attached file exceeds 20 MB');
+    throw new AppError('files-too-large', 'Attached file exceeds 20 MB');
   }
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'metacells-file-'));
@@ -229,7 +229,7 @@ registerJobHandler('files.extract_content', {
     const payload = job && job.payload ? job.payload : {};
     const binary = await getArtifactBinary(String(payload.binaryArtifactId || ''));
     if (!binary || !binary.buffer || !binary.buffer.length) {
-      throw new Meteor.Error('files-missing', 'Attached file artifact not found');
+      throw new AppError('files-missing', 'Attached file artifact not found');
     }
     return extractFileContentWithConverter({
       fileName: binary.fileName,

@@ -40,7 +40,6 @@ export default defineConfig({
   optimizeDeps: {
     exclude: [
       'imapflow',
-      '@whiskeysockets/baileys',
     ],
   },
 });
