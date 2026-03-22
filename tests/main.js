@@ -1,3 +1,4 @@
+import { invokeRpc, isClient, isServer, tick } from './runtime-test-helpers.js';
 import assert from 'assert';
 import { registerWorkbookSpecTests } from './workbook-spec-framework.js';
 
@@ -7,15 +8,15 @@ describe('metacells', function () {
     assert.strictEqual(name, 'metacells');
   });
 
-  if (Meteor.isClient) {
+  if (isClient) {
     it('client is not server', function () {
-      assert.strictEqual(Meteor.isServer, false);
+      assert.strictEqual(isServer, false);
     });
   }
 
-  if (Meteor.isServer) {
+  if (isServer) {
     it('server is not client', function () {
-      assert.strictEqual(Meteor.isClient, false);
+      assert.strictEqual(isClient, false);
     });
 
     it('builds a topological evaluation plan for same-sheet dependencies', async function () {
@@ -633,6 +634,8 @@ describe('metacells', function () {
           return cells[cellId] || '';
         },
         getCellState(sheetId, cellId) {
+          return states[cellId] || '';
+        },
         getCellDisplayValue() {
           return '';
         },
@@ -943,6 +946,8 @@ describe('metacells', function () {
         label: 'tg',
         message: 'message',
       });
+      assert.deepStrictEqual(parseChannelSendCommand('/tg:send:hello'), {
+        label: 'tg',
         message: 'hello',
       });
       assert.deepStrictEqual(
@@ -1378,9 +1383,7 @@ describe('metacells', function () {
       const { decodeWorkbookDocument } =
         await import('../imports/api/sheets/workbook-codec.js');
 
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.create'
-      ].apply({}, ['Test Save Workbook']);
+      const sheetId = await invokeRpc('sheets.create', 'Test Save Workbook');
 
       try {
         const workbook = {
@@ -1410,10 +1413,10 @@ describe('metacells', function () {
           globals: {},
         };
 
-        await Meteor.server.method_handlers['sheets.saveWorkbook'].apply({}, [
+        await invokeRpc('sheets.saveWorkbook', 
           sheetId,
           workbook,
-        ]);
+        );
 
         const saved = await Sheets.findOneAsync(sheetId);
         assert.ok(saved);
@@ -1438,9 +1441,7 @@ describe('metacells', function () {
       const { decodeWorkbookDocument } =
         await import('../imports/api/sheets/workbook-codec.js');
 
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.create'
-      ].apply({}, ['Test Compute Workbook']);
+      const sheetId = await invokeRpc('sheets.create', 'Test Compute Workbook');
 
       try {
         const workbook = {
@@ -1478,13 +1479,11 @@ describe('metacells', function () {
           globals: {},
         };
 
-        await Meteor.server.method_handlers['sheets.saveWorkbook'].apply({}, [
+        await invokeRpc('sheets.saveWorkbook', 
           sheetId,
           workbook,
-        ]);
-        const result = await Meteor.server.method_handlers[
-          'sheets.computeGrid'
-        ].apply({}, [sheetId, 'sheet-1', {}]);
+        );
+        const result = await invokeRpc('sheets.computeGrid', sheetId, 'sheet-1', {});
 
         assert.strictEqual(result.values.B1, 'alpha');
 
@@ -1508,9 +1507,7 @@ describe('metacells', function () {
       const { decodeWorkbookDocument } =
         await import('../imports/api/sheets/workbook-codec.js');
 
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.createFormulaTestWorkbook'
-      ].apply({}, []);
+      const sheetId = await invokeRpc('sheets.createFormulaTestWorkbook');
 
       try {
         const saved = await Sheets.findOneAsync(sheetId);
@@ -1556,11 +1553,11 @@ describe('metacells', function () {
         assert.strictEqual(workbook.sheets['sheet-1'].cells.D30.value, 'PASS');
         assert.strictEqual(
           workbook.sheets['sheet-3'].cells.A2.source,
-          "'@idea: one-line value proposition",
+          "'@idea: write a one-line value proposition",
         );
         assert.strictEqual(
           workbook.sheets['sheet-3'].cells.A3.source,
-          '>5 потенциальных аудиторий для проекта @idea. по одной ЦА',
+          '>5 target customer segments for @idea, one per row',
         );
         assert.strictEqual(
           workbook.sheets['sheet-3'].cells.A4.source,
@@ -1568,7 +1565,7 @@ describe('metacells', function () {
         );
         assert.strictEqual(
           workbook.sheets['sheet-3'].cells.J2.source,
-          'пломбир для карликов',
+          'AI spreadsheet copilot for finance teams',
         );
       } finally {
         await Sheets.removeAsync({ _id: sheetId });
@@ -1580,9 +1577,7 @@ describe('metacells', function () {
       const { decodeWorkbookDocument } =
         await import('../imports/api/sheets/workbook-codec.js');
 
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.createFinancialModelWorkbook'
-      ].apply({}, []);
+      const sheetId = await invokeRpc('sheets.createFinancialModelWorkbook');
 
       try {
         const saved = await Sheets.findOneAsync(sheetId);
@@ -1791,9 +1786,7 @@ describe('metacells', function () {
       const { decodeWorkbookDocument } =
         await import('../imports/api/sheets/workbook-codec.js');
 
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.create'
-      ].apply({}, ['Test Missing Sheet Ref']);
+      const sheetId = await invokeRpc('sheets.create', 'Test Missing Sheet Ref');
 
       try {
         const workbook = {
@@ -1869,7 +1862,7 @@ describe('metacells', function () {
       service.enrichPromptWithFetchedUrls = (prompt) => Promise.resolve(prompt);
 
       service.requestAsk('hello', 'AI_CACHE:\n---\nhello', false, '', null);
-      await new Promise((resolve) => Meteor.setTimeout(resolve, 0));
+      await tick();
 
       assert.strictEqual(
         service.cache['AI_CACHE:\n---\nhello'],
@@ -2060,9 +2053,7 @@ describe('metacells', function () {
       const { decodeWorkbookDocument } =
         await import('../imports/api/sheets/workbook-codec.js');
 
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.create'
-      ].apply({}, ['Test Cross Sheet Named Refs']);
+      const sheetId = await invokeRpc('sheets.create', 'Test Cross Sheet Named Refs');
 
       try {
         const workbook = {
@@ -2145,17 +2136,15 @@ describe('metacells', function () {
           globals: {},
         };
 
-        await Meteor.server.method_handlers['sheets.saveWorkbook'].apply({}, [
+        await invokeRpc('sheets.saveWorkbook', 
           sheetId,
           workbook,
-        ]);
-        let result = await Meteor.server.method_handlers[
-          'sheets.computeGrid'
-        ].apply({}, [sheetId, 'sheet-1', {}]);
+        );
+        let result = await invokeRpc('sheets.computeGrid', sheetId, 'sheet-1', {});
         assert.strictEqual(result.values.B1, 60);
         assert.strictEqual(result.values.C1, 60);
 
-        await Meteor.server.method_handlers['sheets.saveWorkbook'].apply({}, [
+        await invokeRpc('sheets.saveWorkbook', 
           sheetId,
           {
             ...workbook,
@@ -2177,11 +2166,9 @@ describe('metacells', function () {
               },
             },
           },
-        ]);
+        );
 
-        result = await Meteor.server.method_handlers[
-          'sheets.computeGrid'
-        ].apply({}, [sheetId, 'sheet-1', {}]);
+        result = await invokeRpc('sheets.computeGrid', sheetId, 'sheet-1', {});
         assert.strictEqual(result.values.B1, 70);
         assert.strictEqual(result.values.C1, 70);
 
@@ -2697,9 +2684,7 @@ describe('metacells', function () {
       const { decodeWorkbookDocument } =
         await import('../imports/api/sheets/workbook-codec.js');
 
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.create'
-      ].apply({}, ['Quoted Prompt Snapshot Recompute']);
+      const sheetId = await invokeRpc('sheets.create', 'Quoted Prompt Snapshot Recompute');
 
       try {
         const persistedWorkbook = {
@@ -2766,10 +2751,10 @@ describe('metacells', function () {
           globals: {},
         };
 
-        await Meteor.server.method_handlers['sheets.saveWorkbook'].apply({}, [
+        await invokeRpc('sheets.saveWorkbook', 
           sheetId,
           persistedWorkbook,
-        ]);
+        );
 
         const clientWorkbookSnapshot = {
           ...persistedWorkbook,
@@ -2792,15 +2777,14 @@ describe('metacells', function () {
           },
         };
 
-        const result = await Meteor.server.method_handlers[
-          'sheets.computeGrid'
-        ].apply({}, [
+        const result = await invokeRpc(
+          'sheets.computeGrid',
           sheetId,
           'sheet-1',
           {
             workbookSnapshot: clientWorkbookSnapshot,
           },
-        ]);
+        );
 
         const saved = await Sheets.findOneAsync(sheetId);
         const decodedWorkbook = decodeWorkbookDocument(saved.workbook || {});
@@ -2822,9 +2806,7 @@ describe('metacells', function () {
       const { Sheets } = await import('../imports/api/sheets/index.js');
       const { decodeWorkbookDocument } =
         await import('../imports/api/sheets/workbook-codec.js');
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.create'
-      ].apply({}, ['Dependency Repair Test']);
+      const sheetId = await invokeRpc('sheets.create', 'Dependency Repair Test');
 
       try {
         const workbook = {
@@ -2877,9 +2859,7 @@ describe('metacells', function () {
           },
         );
 
-        await Meteor.server.method_handlers[
-          'sheets.rebuildDependencyGraph'
-        ].apply({}, [sheetId]);
+        await invokeRpc('sheets.rebuildDependencyGraph', sheetId);
 
         const saved = await Sheets.findOneAsync(sheetId);
         const decoded = decodeWorkbookDocument(saved.workbook || {});
@@ -2940,7 +2920,7 @@ describe('metacells', function () {
       assert.strictEqual(workbookMentionsChannel(workbook, 'other'), false);
     });
 
-    it('runs durable jobs through the Mongo-backed worker', async function () {
+    it('runs durable jobs through the SQLite-backed worker', async function () {
       const { Jobs, registerJobHandler, enqueueDurableJobAndWait } =
         await import('../imports/api/jobs/index.js');
       registerJobHandler('test.echo', {
@@ -2988,9 +2968,7 @@ describe('metacells', function () {
 
     it('uses persisted workbook cache/runtime state when client snapshot lags', async function () {
       const { Sheets } = await import('../imports/api/sheets/index.js');
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.create'
-      ].apply({}, ['Test Persisted Cache Merge']);
+      const sheetId = await invokeRpc('sheets.create', 'Test Persisted Cache Merge');
 
       try {
         const persistedWorkbook = {
@@ -3054,13 +3032,12 @@ describe('metacells', function () {
           caches: {},
         };
 
-        const result = await Meteor.server.method_handlers[
-          'sheets.computeGrid'
-        ].apply({}, [
+        const result = await invokeRpc(
+          'sheets.computeGrid',
           sheetId,
           'sheet-1',
           { workbookSnapshot: laggingClientSnapshot },
-        ]);
+        );
 
         assert.strictEqual(result.values.A1, '7');
         assert.strictEqual(
@@ -3077,9 +3054,7 @@ describe('metacells', function () {
       const { Sheets } = await import('../imports/api/sheets/index.js');
       const { decodeWorkbookDocument } =
         await import('../imports/api/sheets/workbook-codec.js');
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.create'
-      ].apply({}, ['Test Save Merge']);
+      const sheetId = await invokeRpc('sheets.create', 'Test Save Merge');
 
       try {
         const persistedWorkbook = {
@@ -3150,10 +3125,10 @@ describe('metacells', function () {
           caches: {},
         };
 
-        await Meteor.server.method_handlers['sheets.saveWorkbook'].apply({}, [
+        await invokeRpc('sheets.saveWorkbook', 
           sheetId,
           laggingClientWorkbook,
-        ]);
+        );
 
         const saved = await Sheets.findOneAsync(sheetId);
         const decoded = decodeWorkbookDocument(saved.workbook || {});
@@ -3172,9 +3147,7 @@ describe('metacells', function () {
       const { Sheets } = await import('../imports/api/sheets/index.js');
       const { decodeWorkbookDocument } =
         await import('../imports/api/sheets/workbook-codec.js');
-      const sheetId = await Meteor.server.method_handlers[
-        'sheets.create'
-      ].apply({}, ['Test Generated Spill Merge']);
+      const sheetId = await invokeRpc('sheets.create', 'Test Generated Spill Merge');
 
       try {
         const persistedWorkbook = {
@@ -3249,10 +3222,10 @@ describe('metacells', function () {
           },
         };
 
-        await Meteor.server.method_handlers['sheets.saveWorkbook'].apply({}, [
+        await invokeRpc('sheets.saveWorkbook', 
           sheetId,
           laggingClientWorkbook,
-        ]);
+        );
 
         const saved = await Sheets.findOneAsync(sheetId);
         const decoded = decodeWorkbookDocument(saved.workbook || {});

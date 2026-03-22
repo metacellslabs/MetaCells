@@ -1,5 +1,7 @@
-import { Meteor } from 'meteor/meteor';
-import { check, Match } from 'meteor/check';
+import { AppError } from '../../../../lib/app-error.js';
+import { registerStartupHook } from '../../../../lib/startup-hooks.js';
+import { check, Match } from '../../../../lib/check.js';
+import { registerMethods } from '../../../../lib/rpc.js';
 import { getRegisteredChannelConnectorById } from '../connectors/index.js';
 import {
   AppSettings,
@@ -156,7 +158,7 @@ async function searchChannelEventHistory(channel, query, options) {
 function getChannelHandler(connectorId) {
   const handler = getRegisteredChannelHandlerById(connectorId);
   if (handler) return handler;
-  throw new Meteor.Error(
+  throw new AppError(
     'channel-connector-not-supported',
     `Unsupported channel connector: ${connectorId}`,
   );
@@ -589,11 +591,11 @@ async function reconcileChannelSubscriptions() {
 }
 
 export function startChannelPollingWorker() {
-  if (!Meteor.isServer || channelPollingWorkerStarted) return;
+  if (channelPollingWorkerStarted) return;
   channelPollingWorkerStarted = true;
   logChannelRuntime('worker.started', { intervalMs: CHANNEL_POLL_INTERVAL_MS });
-  Meteor.startup(() => {
-    Meteor.setTimeout(() => {
+  setTimeout(() => {
+    setTimeout(() => {
       reconcileChannelSubscriptions().catch((error) => {
         logChannelRuntime('subscribe.startup.failed', {
           message: error && error.message ? error.message : String(error),
@@ -605,7 +607,7 @@ export function startChannelPollingWorker() {
         });
       });
     }, 5000);
-    Meteor.setInterval(() => {
+    setInterval(() => {
       reconcileChannelSubscriptions().catch((error) => {
         logChannelRuntime('subscribe.interval.failed', {
           message: error && error.message ? error.message : String(error),
@@ -624,12 +626,11 @@ export function isChannelPollingWorkerStarted() {
   return channelPollingWorkerStarted;
 }
 
-if (Meteor.isServer) {
-  registerAIQueueSheetRuntimeHooks({
+registerAIQueueSheetRuntimeHooks({
     loadChannelPayloads: async () => getActiveChannelPayloadMap(),
   });
 
-  Meteor.startup(() => {
+  registerStartupHook(() => {
     migrateLegacyChannelEvents().catch((error) => {
       logChannelRuntime('legacy.events.migration_failed', {
         message: error && error.message ? error.message : String(error),
@@ -637,7 +638,7 @@ if (Meteor.isServer) {
     });
   });
 
-  Meteor.methods({
+  registerMethods({
     async 'settings.upsertCommunicationChannel'(channel) {
       check(channel, {
         id: String,
@@ -651,7 +652,7 @@ if (Meteor.isServer) {
 
       const connector = getRegisteredChannelConnectorById(channel.connectorId);
       if (!connector) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-connector-not-found',
           'Channel connector not found',
         );
@@ -746,7 +747,7 @@ if (Meteor.isServer) {
         : [];
       const channel = channels.find((item) => item && item.id === channelId);
       if (!channel) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-not-found',
           'Communication channel not found',
         );
@@ -754,7 +755,7 @@ if (Meteor.isServer) {
 
       const connector = getRegisteredChannelConnectorById(channel.connectorId);
       if (!connector) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-connector-not-found',
           'Channel connector not found',
         );
@@ -801,7 +802,7 @@ if (Meteor.isServer) {
           },
         );
 
-        throw new Meteor.Error('channel-test-failed', message);
+        throw new AppError('channel-test-failed', message);
       }
     },
 
@@ -822,7 +823,7 @@ if (Meteor.isServer) {
         : [];
       const channel = findConfiguredChannelById(channels, channelId);
       if (!channel) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-not-found',
           'Communication channel not found',
         );
@@ -830,7 +831,7 @@ if (Meteor.isServer) {
 
       const connector = getRegisteredChannelConnectorById(channel.connectorId);
       if (!connector) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-connector-not-found',
           'Channel connector not found',
         );
@@ -838,7 +839,7 @@ if (Meteor.isServer) {
 
       const handler = getChannelHandler(channel.connectorId);
       if (typeof handler.send !== 'function') {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-send-not-supported',
           `Channel ${String(channel.connectorId || '')} does not support send actions`,
         );
@@ -875,7 +876,7 @@ if (Meteor.isServer) {
         : [];
       const channel = findConfiguredChannelByLabel(channels, label);
       if (!channel) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-not-found',
           `Communication channel "/${normalizeChannelLabel(label)}" not found`,
         );
@@ -883,7 +884,7 @@ if (Meteor.isServer) {
 
       const connector = getRegisteredChannelConnectorById(channel.connectorId);
       if (!connector) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-connector-not-found',
           'Channel connector not found',
         );
@@ -891,7 +892,7 @@ if (Meteor.isServer) {
 
       const handler = getChannelHandler(channel.connectorId);
       if (typeof handler.send !== 'function') {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-send-not-supported',
           `Channel ${String(channel.connectorId || '')} does not support send actions`,
         );
@@ -923,14 +924,14 @@ if (Meteor.isServer) {
         : [];
       const channel = findConfiguredChannelById(channels, channelId);
       if (!channel) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-not-found',
           'Communication channel not found',
         );
       }
       const connector = getRegisteredChannelConnectorById(channel.connectorId);
       if (!connector) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-connector-not-found',
           'Channel connector not found',
         );
@@ -971,14 +972,14 @@ if (Meteor.isServer) {
         : [];
       const channel = findConfiguredChannelByLabel(channels, label);
       if (!channel) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-not-found',
           `Communication channel "/${normalizeChannelLabel(label)}" not found`,
         );
       }
       const connector = getRegisteredChannelConnectorById(channel.connectorId);
       if (!connector) {
-        throw new Meteor.Error(
+        throw new AppError(
           'channel-connector-not-found',
           'Channel connector not found',
         );
@@ -1007,4 +1008,3 @@ if (Meteor.isServer) {
       };
     },
   });
-}
