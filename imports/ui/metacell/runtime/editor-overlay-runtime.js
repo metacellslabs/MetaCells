@@ -1,3 +1,5 @@
+import { syncOverlayInputSelection } from './editor-selection-runtime.js';
+
 function getRelativeCellRect(container, element) {
   if (!container || !element) return null;
   var containerRect = container.getBoundingClientRect();
@@ -21,19 +23,51 @@ function getViewportCellRect(element) {
   };
 }
 
-function syncOverlayInputSelection(app, sourceInput) {
-  if (!app || !app.editorOverlayInput || !sourceInput) return;
-  var overlayInput = app.editorOverlayInput;
-  var start =
-    typeof sourceInput.selectionStart === 'number'
-      ? sourceInput.selectionStart
-      : overlayInput.value.length;
-  var end =
-    typeof sourceInput.selectionEnd === 'number'
-      ? sourceInput.selectionEnd
-      : start;
-  if (typeof overlayInput.setSelectionRange === 'function') {
-    overlayInput.setSelectionRange(start, end);
+function updateEditorOverlayUiState(app, nextState) {
+  if (!app) return;
+  var next =
+    nextState && typeof nextState === 'object'
+      ? {
+          visible: nextState.visible === true,
+          cellId: String(nextState.cellId || ''),
+          left: Number(nextState.left || 0),
+          top: Number(nextState.top || 0),
+          width: Number(nextState.width || 0),
+          height: Number(nextState.height || 0),
+          inputLeft: Number(nextState.inputLeft || 0),
+          inputTop: Number(nextState.inputTop || 0),
+          inputWidth: Number(nextState.inputWidth || 0),
+          inputHeight: Number(nextState.inputHeight || 0),
+        }
+      : {
+          visible: false,
+          cellId: '',
+          left: 0,
+          top: 0,
+          width: 0,
+          height: 0,
+          inputLeft: 0,
+          inputTop: 0,
+          inputWidth: 0,
+          inputHeight: 0,
+        };
+  var prev = app.editorOverlayUiState;
+  var changed =
+    !prev ||
+    prev.visible !== next.visible ||
+    prev.cellId !== next.cellId ||
+    prev.left !== next.left ||
+    prev.top !== next.top ||
+    prev.width !== next.width ||
+    prev.height !== next.height ||
+    prev.inputLeft !== next.inputLeft ||
+    prev.inputTop !== next.inputTop ||
+    prev.inputWidth !== next.inputWidth ||
+    prev.inputHeight !== next.inputHeight;
+  if (!changed) return;
+  app.editorOverlayUiState = next;
+  if (typeof app.publishUiState === 'function') {
+    app.publishUiState();
   }
 }
 
@@ -45,7 +79,8 @@ function setSourceOverlayEditingState(app, active) {
 export function focusEditorOverlayInput(app) {
   if (!app || !app.editorOverlayInput || !app.activeInput) return;
   if (
-    app.editorOverlay.style.display === 'none' ||
+    !app.editorOverlayUiState ||
+    app.editorOverlayUiState.visible !== true ||
     !app.isEditingCell(app.activeInput)
   ) {
     return;
@@ -77,40 +112,29 @@ export function syncEditorOverlay(app) {
     return;
   }
 
-  app.editorOverlay.style.display = 'block';
-  app.editorOverlay.style.left = Math.round(relativeRect.left) + 'px';
-  app.editorOverlay.style.top = Math.round(relativeRect.top) + 'px';
-  app.editorOverlay.style.width =
-    Math.max(0, Math.round(relativeRect.width)) + 'px';
-  app.editorOverlay.style.height =
-    Math.max(0, Math.round(relativeRect.height)) + 'px';
-  app.editorOverlay.dataset.cellId = String(app.activeInput.id || '');
+  updateEditorOverlayUiState(app, {
+    visible: true,
+    cellId: String(app.activeInput.id || ''),
+    left: Math.round(relativeRect.left),
+    top: Math.round(relativeRect.top),
+    width: Math.max(0, Math.round(relativeRect.width)),
+    height: Math.max(0, Math.round(relativeRect.height)),
+    inputLeft: Math.round(viewportRect.left),
+    inputTop: Math.round(viewportRect.top),
+    inputWidth: Math.max(0, Math.round(viewportRect.width)),
+    inputHeight: Math.max(0, Math.round(viewportRect.height)),
+  });
   setSourceOverlayEditingState(app, true);
-  if (app.editorOverlayInput) {
-    app.editorOverlayInput.style.left = Math.round(viewportRect.left) + 'px';
-    app.editorOverlayInput.style.top = Math.round(viewportRect.top) + 'px';
-    app.editorOverlayInput.style.width =
-      Math.max(0, Math.round(viewportRect.width)) + 'px';
-    app.editorOverlayInput.style.height =
-      Math.max(0, Math.round(viewportRect.height)) + 'px';
-    if (document.activeElement !== app.editorOverlayInput) {
-      app.editorOverlayInput.value = String(app.activeInput.value || '');
-    }
-    if (app.editorOverlayPendingFocus) {
-      focusEditorOverlayInput(app);
-    }
+  if (app.editorOverlayInput && app.editorOverlayPendingFocus) {
+    focusEditorOverlayInput(app);
   }
 }
 
 export function hideEditorOverlay(app) {
   if (!app || !app.editorOverlay) return;
   setSourceOverlayEditingState(app, false);
-  if (app.editorOverlayInput) {
-    app.editorOverlayInput.value = '';
-  }
   app.editorOverlayPendingFocus = false;
-  app.editorOverlay.style.display = 'none';
-  app.editorOverlay.dataset.cellId = '';
+  updateEditorOverlayUiState(app, null);
 }
 
 export function setupEditorOverlay(app) {
@@ -119,18 +143,14 @@ export function setupEditorOverlay(app) {
     app.tableWrap.style.position = 'relative';
   }
 
-  var overlay = document.createElement('div');
-  overlay.className = 'cell-editor-overlay';
-  overlay.style.display = 'none';
-  overlay.setAttribute('aria-hidden', 'true');
-  overlay.innerHTML =
-    "<div class='cell-editor-overlay-frame'></div>" +
-    "<div class='cell-editor-overlay-label'>Editing</div>" +
-    "<input class='cell-editor-overlay-input' spellcheck='false' />";
-  app.tableWrap.appendChild(overlay);
+  var overlay = app.tableWrap.querySelector('.cell-editor-overlay');
+  if (!overlay) return;
+  var overlayInput = overlay.querySelector('.cell-editor-overlay-input');
+  if (!overlayInput) return;
   app.editorOverlay = overlay;
-  app.editorOverlayInput = overlay.querySelector('.cell-editor-overlay-input');
+  app.editorOverlayInput = overlayInput;
   app.editorOverlayPendingFocus = false;
+  updateEditorOverlayUiState(app, null);
 
   var sync = () => syncEditorOverlay(app);
   app.handleEditorOverlayViewportSync = sync;

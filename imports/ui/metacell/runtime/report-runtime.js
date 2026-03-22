@@ -1,3 +1,14 @@
+import { setupReportToolbarCommands } from './report-toolbar-runtime.js';
+import { setupReportLiveInteractions } from './report-live-runtime.js';
+import { renderReportLiveValues } from './report-render-runtime.js';
+import {
+  createReportTabElement,
+  fragmentHasVisibleContent,
+  renderReportMarkdownNodes,
+  replaceMentionInTextNode,
+  replaceMentionNodes,
+} from './report-transform-runtime.js';
+
 export function setupReportControls(app) {
   if (!app.reportEditor || !app.reportWrap) return;
 
@@ -11,95 +22,8 @@ export function setupReportControls(app) {
     app.renderReportLiveValues();
   });
 
-  var cmdButtons = app.reportWrap.querySelectorAll('.report-cmd');
-  cmdButtons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      if (app.reportMode !== 'edit') return;
-      var cmd = btn.dataset.cmd;
-      app.reportEditor.focus();
-      if (!cmd) return;
-      app.captureHistorySnapshot('report:' + app.activeSheetId);
-      document.execCommand(cmd, false);
-      if (app.isReportActive())
-        app.storage.setReportContent(
-          app.activeSheetId,
-          app.reportEditor.innerHTML,
-        );
-      app.renderReportLiveValues();
-    });
-  });
-
-  app.reportLive.addEventListener('change', (e) => {
-    var input =
-      e.target && e.target.closest
-        ? e.target.closest('.report-linked-input')
-        : null;
-    if (!input) return;
-    app.applyLinkedReportInput(input);
-  });
-  app.reportLive.addEventListener('click', (e) => {
-    var reportTabButton =
-      e.target && e.target.closest
-        ? e.target.closest('.report-tab-nav-button')
-        : null;
-    if (reportTabButton) {
-      e.preventDefault();
-      app.activateReportTab(reportTabButton.dataset.reportTabKey || '');
-      return;
-    }
-    var fileButton =
-      e.target && e.target.closest
-        ? e.target.closest('.report-file-button')
-        : null;
-    var removeButton =
-      e.target && e.target.closest
-        ? e.target.closest('.report-file-remove')
-        : null;
-    if (fileButton || removeButton) {
-      var shell = (fileButton || removeButton).closest('.report-file-shell');
-      if (!shell) return;
-      e.preventDefault();
-      e.stopPropagation();
-      app.handleReportFileShellAction(shell, !!removeButton);
-      return;
-    }
-  });
-  app.reportLive.addEventListener('focusin', (e) => {
-    var input =
-      e.target && e.target.closest
-        ? e.target.closest('.report-linked-input')
-        : null;
-    if (!input) return;
-    app.refreshLinkedReportInputValue(input);
-  });
-  app.reportLive.addEventListener('keydown', (e) => {
-    var input =
-      e.target && e.target.closest
-        ? e.target.closest('.report-linked-input')
-        : null;
-    if (!input) return;
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      app.applyLinkedReportInput(input);
-      input.blur();
-    }
-  });
-  app.reportLive.addEventListener('click', (e) => {
-    var link =
-      e.target && e.target.closest
-        ? e.target.closest('.report-internal-link')
-        : null;
-    if (!link) return;
-    e.preventDefault();
-    app.followReportInternalLink(link);
-  });
-
-  var modeButtons = app.reportWrap.querySelectorAll('.report-mode');
-  modeButtons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      app.setReportMode(btn.dataset.reportMode || 'edit');
-    });
-  });
+  setupReportToolbarCommands(app);
+  setupReportLiveInteractions(app);
 
   app.setReportMode('view');
   app.renderReportLiveValues();
@@ -113,194 +37,10 @@ export function setReportMode(app, mode) {
     app.renderReportLiveValues(true);
   }
 
-  if (app.reportEditor)
-    app.reportEditor.style.display = isView ? 'none' : 'block';
-
-  var liveLabel = app.reportWrap
-    ? app.reportWrap.querySelector('.report-live-label')
-    : null;
-  if (liveLabel) liveLabel.style.display = isView ? 'block' : 'none';
-  if (app.reportLive) app.reportLive.style.display = isView ? 'block' : 'none';
-
-  var modeButtons = app.reportWrap
-    ? app.reportWrap.querySelectorAll('.report-mode')
-    : [];
-  modeButtons.forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.reportMode === app.reportMode);
-  });
-
-  var cmdButtons = app.reportWrap
-    ? app.reportWrap.querySelectorAll('.report-cmd')
-    : [];
-  cmdButtons.forEach((btn) => {
-    btn.disabled = isView;
-  });
-
   if (!isView) app.lastReportLiveHtml = '';
-}
-
-export function renderReportLiveValues(app, forceRender) {
-  if (!app.reportEditor || !app.reportLive) return;
-  if (app.reportMode !== 'view' && !forceRender) return;
-  var root = document.createElement('div');
-  root.innerHTML = app.reportEditor.innerHTML || '';
-  app.replaceMentionNodes(root);
-  app.renderReportMarkdownNodes(root);
-  var html = root.innerHTML.trim();
-  var nextHtml = html || '<p></p>';
-  if (!forceRender && app.lastReportLiveHtml === nextHtml) return;
-  app.lastReportLiveHtml = nextHtml;
-  app.reportLive.innerHTML = nextHtml;
-  app.injectLinkedInputsFromPlaceholders(app.reportLive);
-  app.decorateReportTabs(app.reportLive);
-  if (!app.reportLive.innerHTML.trim()) {
-    app.reportLive.innerHTML = '<p></p>';
+  if (typeof app.publishUiState === 'function') {
+    app.publishUiState();
   }
-}
-
-export function replaceMentionNodes(app, root) {
-  var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-  var nodes = [];
-  var current;
-  while ((current = walker.nextNode())) {
-    nodes.push(current);
-  }
-  for (var i = 0; i < nodes.length; i++) {
-    replaceMentionInTextNode(app, nodes[i]);
-  }
-}
-
-export function renderReportMarkdownNodes(app, root) {
-  if (!root) return;
-  var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-  var nodes = [];
-  var current;
-  while ((current = walker.nextNode())) {
-    nodes.push(current);
-  }
-
-  for (var i = 0; i < nodes.length; i++) {
-    var textNode = nodes[i];
-    if (!textNode || !textNode.parentNode) continue;
-    var parent = textNode.parentNode;
-    if (!parent || !parent.closest) continue;
-    if (parent.closest('.report-input-placeholder')) continue;
-    if (parent.closest('.report-internal-link')) continue;
-    if (parent.closest('.report-region-table')) continue;
-    if (parent.closest('.report-linked-input')) continue;
-    if (parent.closest('code, pre, button, a, table, ul, ol, li')) continue;
-
-    var text = String(textNode.nodeValue || '');
-    if (!text.trim()) continue;
-
-    var container = document.createElement('div');
-    container.innerHTML = app.renderMarkdown(text);
-    var fragment = document.createDocumentFragment();
-    while (container.firstChild) {
-      fragment.appendChild(container.firstChild);
-    }
-    parent.replaceChild(fragment, textNode);
-  }
-}
-
-export function replaceMentionInTextNode(app, textNode) {
-  var text = textNode.nodeValue || '';
-  if (!text) return;
-  var pattern =
-    /(!@(?:'[^']+'|"[^"]+"|[A-Za-z][A-Za-z0-9 _-]*)[!:]@?[A-Za-z]+[0-9]+:@?[A-Za-z]+[0-9]+(?:#[A-Za-z0-9 _-]+)?|!@(?:'[^']+'|"[^"]+"|[A-Za-z][A-Za-z0-9 _-]*)[!:]@?[A-Za-z]+[0-9]+(?:#[A-Za-z0-9 _-]+)?|!@[A-Za-z_][A-Za-z0-9_]*(?:#[A-Za-z0-9 _-]+)?|Tab:\[[^\]]*\]|File:(?:_?@[A-Za-z_][A-Za-z0-9_]*|(?:_?@)?(?:'[^']+'|"[^"]+"|[A-Za-z][A-Za-z0-9 _-]*)[!:]@?[A-Za-z]+[0-9]+)(?::\[[^\]]*\])?|Input:(?:_?@[A-Za-z_][A-Za-z0-9_]*|(?:_?@)?(?:'[^']+'|"[^"]+"|[A-Za-z][A-Za-z0-9 _-]*)[!:]@?[A-Za-z]+[0-9]+)(?::\[[^\]]*\])?|(?:_?@)?(?:'[^']+'|"[^"]+"|[A-Za-z][A-Za-z0-9 _-]*)[!:]@?[A-Za-z]+[0-9]+:@?[A-Za-z]+[0-9]+|_?@[A-Za-z_][A-Za-z0-9_]*|(?:_?@)?(?:'[^']+'|"[^"]+"|[A-Za-z][A-Za-z0-9 _-]*)[:!]@?[A-Za-z]+[0-9]+)/g;
-  pattern.lastIndex = 0;
-  var hasMatch = pattern.exec(text);
-  if (!hasMatch) return;
-  pattern.lastIndex = 0;
-
-  var fragment = document.createDocumentFragment();
-  var cursor = 0;
-  var m;
-  while ((m = pattern.exec(text))) {
-    var token = m[0];
-    if (m.index > cursor) {
-      fragment.appendChild(
-        document.createTextNode(text.slice(cursor, m.index)),
-      );
-    }
-    if (token.indexOf('Tab:[') === 0) {
-      fragment.appendChild(createReportTabElement(app, token));
-    } else if (token.indexOf('Input:') === 0) {
-      var inputSpec = parseReportControlToken(app, token, 'Input:');
-      var placeholder = document.createElement('span');
-      placeholder.className = 'report-input-placeholder';
-      placeholder.dataset.reportInputToken = inputSpec.referenceToken;
-      if (inputSpec.hint) placeholder.dataset.reportInputHint = inputSpec.hint;
-      placeholder.textContent = token;
-      fragment.appendChild(placeholder);
-    } else if (token.indexOf('File:') === 0) {
-      var fileSpec = parseReportControlToken(app, token, 'File:');
-      var filePlaceholder = document.createElement('span');
-      filePlaceholder.className = 'report-file-placeholder';
-      filePlaceholder.dataset.reportFileToken = fileSpec.referenceToken;
-      if (fileSpec.hint) filePlaceholder.dataset.reportFileHint = fileSpec.hint;
-      filePlaceholder.textContent = token;
-      fragment.appendChild(filePlaceholder);
-    } else if (token.indexOf('!@') === 0) {
-      var linkResolved = resolveReportInternalLink(app, token);
-      if (!linkResolved) {
-        fragment.appendChild(document.createTextNode(token));
-      } else {
-        fragment.appendChild(
-          createReportInternalLinkElement(app, token, linkResolved),
-        );
-      }
-    } else {
-      var resolved = resolveReportMention(app, token);
-      if (!resolved || typeof resolved.value === 'undefined') {
-        fragment.appendChild(document.createTextNode(token));
-      } else if (resolved.type === 'region') {
-        fragment.appendChild(
-          createReportRegionTableElement(app, resolved.rows),
-        );
-      } else if (resolved.type === 'table') {
-        fragment.appendChild(
-          createReportRegionTableElement(app, resolved.rows),
-        );
-      } else if (resolved.type === 'list') {
-        fragment.appendChild(createReportListElement(app, resolved.items));
-      } else {
-        fragment.appendChild(document.createTextNode(String(resolved.value)));
-      }
-    }
-    cursor = m.index + token.length;
-  }
-  if (cursor < text.length) {
-    fragment.appendChild(document.createTextNode(text.slice(cursor)));
-  }
-  textNode.parentNode.replaceChild(fragment, textNode);
-}
-
-export function createReportTabElement(app, token) {
-  var title = String(token || '')
-    .replace(/^Tab:\[/, '')
-    .replace(/\]$/, '')
-    .trim();
-  var element = document.createElement('div');
-  element.className = 'report-tab-title';
-  element.dataset.reportTabMarker = 'true';
-  element.textContent = title || 'Section';
-  return element;
-}
-
-export function fragmentHasVisibleContent(app, fragment) {
-  if (!fragment) return false;
-  var walker = document.createTreeWalker(fragment, NodeFilter.SHOW_ALL, null);
-  var current;
-  while ((current = walker.nextNode())) {
-    if (current.nodeType === Node.ELEMENT_NODE) return true;
-    if (
-      current.nodeType === Node.TEXT_NODE &&
-      String(current.nodeValue || '').trim()
-    )
-      return true;
-  }
-  return false;
 }
 
 export function getReportTabStateStore(app) {
@@ -468,7 +208,10 @@ export function followReportInternalLink(app, link) {
     return;
   }
   if (app.activeSheetId !== sheetId) app.switchToSheet(sheetId);
-  var input = app.inputById[cellId];
+  var input =
+    typeof app.getCellInput === 'function'
+      ? app.getCellInput(cellId)
+      : app.inputById[cellId];
   if (!input) return;
   app.setActiveInput(input);
   input.focus();

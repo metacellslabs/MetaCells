@@ -38,11 +38,23 @@ function setSelectionRangeState(app, range) {
   app.selectionRange = range || null;
 }
 
+function getVisibleSheetId(app) {
+  return typeof app.getVisibleSheetId === 'function'
+    ? String(app.getVisibleSheetId() || '')
+    : String(app.activeSheetId || '');
+}
+
+function getEditingOwnerSheetId(app) {
+  return typeof app.getEditingOwnerSheetId === 'function'
+    ? String(app.getEditingOwnerSheetId() || '')
+    : getVisibleSheetId(app);
+}
+
 export function isEditingCell(app, input) {
   if (!input) return false;
   if (app.editingSession && app.editingSession.cellId) {
     return !!(
-      app.editingSession.sheetId === String(app.activeSheetId || '') &&
+      app.editingSession.sheetId === getEditingOwnerSheetId(app) &&
       app.editingSession.cellId === String(input.id || '').toUpperCase()
     );
   }
@@ -149,10 +161,20 @@ export function ensureActiveCell(app) {
   if (app.getActiveCellInput && app.getActiveCellInput()) return;
   var activeCellId = getActiveCellId(app);
   var fallback =
-    (activeCellId && app.inputById[activeCellId]) ||
-    (app.activeCellId && app.inputById[app.activeCellId]) ||
-    app.inputById['A1'] ||
-    app.inputs[0];
+    (activeCellId &&
+      (typeof app.getCellInput === 'function'
+        ? app.getCellInput(activeCellId)
+        : app.inputById[activeCellId])) ||
+    (app.activeCellId &&
+      (typeof app.getCellInput === 'function'
+        ? app.getCellInput(app.activeCellId)
+        : app.inputById[app.activeCellId])) ||
+    (typeof app.getCellInput === 'function'
+      ? app.getCellInput('A1')
+      : app.inputById['A1']) ||
+    (typeof app.getFirstAvailableInput === 'function'
+      ? app.getFirstAvailableInput()
+      : null);
   if (!fallback) return;
   setActiveInput(app, fallback);
   focusCellProxyRuntime(app, fallback);
@@ -178,7 +200,7 @@ export function clearSelectionRange(app) {
 
 export function collectDependencyHintsFromRaw(app, rawValue, sheetIdOverride) {
   var raw = String(rawValue || '');
-  var targetSheetId = String(sheetIdOverride || app.activeSheetId || '');
+  var targetSheetId = String(sheetIdOverride || getVisibleSheetId(app) || '');
   var result = {
     cells: [],
     namedRefs: [],
@@ -298,9 +320,35 @@ export function setSelectionRange(app, anchorId, targetId) {
 }
 
 export function bindHeaderSelectionEvents(app) {
-  var headerRow = app.table.rows[0];
-  for (var colIndex = 1; colIndex < headerRow.cells.length; colIndex++) {
-    var colHeader = headerRow.cells[colIndex];
+  var bounds =
+    typeof app.getGridBounds === 'function'
+      ? app.getGridBounds()
+      : {
+          rows: app.table.rows.length - 1,
+          cols: app.table.rows[0].cells.length - 1,
+        };
+  var cornerHeader =
+    typeof app.getHeaderCell === 'function'
+      ? app.getHeaderCell(0)
+      : app.table.rows[0] && app.table.rows[0].cells
+        ? app.table.rows[0].cells[0]
+        : null;
+  if (cornerHeader && cornerHeader.dataset.headerSelectionBound !== 'true') {
+    cornerHeader.dataset.headerSelectionBound = 'true';
+    cornerHeader.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      selectWholeSheetRegion(app);
+    });
+  }
+
+  for (var colIndex = 1; colIndex <= bounds.cols; colIndex++) {
+    var colHeader =
+      typeof app.getHeaderCell === 'function'
+        ? app.getHeaderCell(colIndex)
+        : app.table.rows[0].cells[colIndex];
+    if (!colHeader || colHeader.dataset.headerSelectionBound === 'true') continue;
+    colHeader.dataset.headerSelectionBound = 'true';
     colHeader.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       if (
@@ -314,8 +362,13 @@ export function bindHeaderSelectionEvents(app) {
     });
   }
 
-  for (var rowIndex = 1; rowIndex < app.table.rows.length; rowIndex++) {
-    var rowHeader = app.table.rows[rowIndex].cells[0];
+  for (var rowIndex = 1; rowIndex <= bounds.rows; rowIndex++) {
+    var rowHeader =
+      typeof app.getRowHeaderCell === 'function'
+        ? app.getRowHeaderCell(rowIndex)
+        : app.table.rows[rowIndex].cells[0];
+    if (!rowHeader || rowHeader.dataset.headerSelectionBound === 'true') continue;
+    rowHeader.dataset.headerSelectionBound = 'true';
     rowHeader.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       if (e.target.closest && e.target.closest('.row-resize-handle')) return;
@@ -357,15 +410,12 @@ export function onHeaderSelectionDragMove(app, event) {
   var td = el.closest('td');
   if (!td) return;
   var mode = app.headerSelectionDrag.mode;
-  var index =
-    mode === 'row'
-      ? td.parentElement
-        ? td.parentElement.rowIndex
-        : 0
-      : td.cellIndex;
-  if (mode === 'row' && td.cellIndex !== 0) return;
-  if (mode === 'col' && (!td.parentElement || td.parentElement.rowIndex !== 0))
-    return;
+  var index = 0;
+  if (mode === 'row') {
+    index = td.parentElement ? td.parentElement.rowIndex : 0;
+  } else if (mode === 'col') {
+    index = td.cellIndex;
+  }
   if (index < 1 || index === app.headerSelectionDrag.targetIndex) return;
 
   app.headerSelectionDrag.targetIndex = index;
@@ -388,7 +438,11 @@ export function applyHeaderSelectionRange(app, mode, fromIndex, toIndex) {
 }
 
 export function selectEntireRow(app, startRow, endRow) {
-  var maxCol = app.table.rows[0].cells.length - 1;
+  var bounds =
+    typeof app.getGridBounds === 'function'
+      ? app.getGridBounds()
+      : { cols: app.table.rows[0].cells.length - 1 };
+  var maxCol = bounds.cols;
   var from = Math.max(1, Math.min(startRow, endRow));
   var to = Math.max(1, Math.max(startRow, endRow));
   var anchorId = app.formatCellId(1, from);
@@ -401,17 +455,25 @@ export function selectEntireRow(app, startRow, endRow) {
   };
   setSelectionRangeState(app, nextRange);
   highlightSelectionRange(app);
-  var target = app.inputById[app.formatCellId(1, from)];
+  app.syncAttachButtonState();
+  var target =
+    typeof app.getCellInput === 'function'
+      ? app.getCellInput(app.formatCellId(1, from))
+      : app.inputById[app.formatCellId(1, from)];
   if (target) {
     app.extendSelectionNav = true;
     setActiveInput(app, target);
-    app.extendSelectionNav = false;
     focusCellProxyRuntime(app, target);
+    app.extendSelectionNav = false;
   }
 }
 
 export function selectEntireColumn(app, startCol, endCol) {
-  var maxRow = app.table.rows.length - 1;
+  var bounds =
+    typeof app.getGridBounds === 'function'
+      ? app.getGridBounds()
+      : { rows: app.table.rows.length - 1 };
+  var maxRow = bounds.rows;
   var from = Math.max(1, Math.min(startCol, endCol));
   var to = Math.max(1, Math.max(startCol, endCol));
   var anchorId = app.formatCellId(from, 1);
@@ -424,12 +486,16 @@ export function selectEntireColumn(app, startCol, endCol) {
   };
   setSelectionRangeState(app, nextRange);
   highlightSelectionRange(app);
-  var target = app.inputById[app.formatCellId(from, 1)];
+  app.syncAttachButtonState();
+  var target =
+    typeof app.getCellInput === 'function'
+      ? app.getCellInput(app.formatCellId(from, 1))
+      : app.inputById[app.formatCellId(from, 1)];
   if (target) {
     app.extendSelectionNav = true;
     setActiveInput(app, target);
-    app.extendSelectionNav = false;
     focusCellProxyRuntime(app, target);
+    app.extendSelectionNav = false;
   }
 }
 
@@ -448,7 +514,10 @@ export function moveSelectionByArrow(app, currentInput, key) {
     parsed.col + movement[1],
     parsed.row + movement[0],
   );
-  var nextInput = app.inputById[nextCellId];
+  var nextInput =
+    typeof app.getCellInput === 'function'
+      ? app.getCellInput(nextCellId)
+      : app.inputById[nextCellId];
   if (!nextInput) return;
 
   var anchor = getAnchorCellId(app) || currentInput.id;
@@ -462,7 +531,10 @@ export function moveToNextFilledCell(app, currentInput, key) {
   if (!currentInput) return false;
   var targetCellId = findJumpTargetCellId(app, currentInput.id, key);
   if (!targetCellId) return null;
-  var target = app.inputById[targetCellId];
+  var target =
+    typeof app.getCellInput === 'function'
+      ? app.getCellInput(targetCellId)
+      : app.inputById[targetCellId];
   if (!target) return null;
   focusCellProxyRuntime(app, target);
   return target;
@@ -489,7 +561,11 @@ export function getSelectionEdgeInputForDirection(app, currentInput, key) {
   }
 
   var edgeCellId = app.formatCellId(col, row);
-  return app.inputById[edgeCellId] || currentInput;
+  return (
+    (typeof app.getCellInput === 'function'
+      ? app.getCellInput(edgeCellId)
+      : app.inputById[edgeCellId]) || currentInput
+  );
 }
 
 export function extendSelectionRangeTowardCell(app, targetCellId, key) {
@@ -532,8 +608,15 @@ export function findJumpTargetCellId(app, startCellId, key) {
   }[key];
   if (!movement) return null;
 
-  var maxRow = app.table.rows.length - 1;
-  var maxCol = app.table.rows[0].cells.length - 1;
+  var bounds =
+    typeof app.getGridBounds === 'function'
+      ? app.getGridBounds()
+      : {
+          rows: app.table.rows.length - 1,
+          cols: app.table.rows[0].cells.length - 1,
+        };
+  var maxRow = bounds.rows;
+  var maxCol = bounds.cols;
   var isWithin = (r, c) => r >= 1 && r <= maxRow && c >= 1 && c <= maxCol;
   var isFilled = (r, c) => cellHasAnyRawValue(app, app.formatCellId(c, r));
 
@@ -590,8 +673,15 @@ export function findAdjacentCellId(app, startCellId, key) {
 
   var row = parsed.row + movement[0];
   var col = parsed.col + movement[1];
-  var maxRow = app.table.rows.length - 1;
-  var maxCol = app.table.rows[0].cells.length - 1;
+  var bounds =
+    typeof app.getGridBounds === 'function'
+      ? app.getGridBounds()
+      : {
+          rows: app.table.rows.length - 1,
+          cols: app.table.rows[0].cells.length - 1,
+        };
+  var maxRow = bounds.rows;
+  var maxCol = bounds.cols;
   if (row < 1 || row > maxRow || col < 1 || col > maxCol) return null;
   return app.formatCellId(col, row);
 }
@@ -602,8 +692,15 @@ export function selectNearestValueRegionFromActive(app, input) {
   var parsed = app.parseCellId(active.id);
   if (!parsed) return;
 
-  var maxRow = app.table.rows.length - 1;
-  var maxCol = app.table.rows[0].cells.length - 1;
+  var bounds =
+    typeof app.getGridBounds === 'function'
+      ? app.getGridBounds()
+      : {
+          rows: app.table.rows.length - 1,
+          cols: app.table.rows[0].cells.length - 1,
+        };
+  var maxRow = bounds.rows;
+  var maxCol = bounds.cols;
   var row = parsed.row;
   var col = parsed.col;
 
@@ -638,8 +735,15 @@ export function selectNearestValueRegionFromActive(app, input) {
 }
 
 export function selectWholeSheetRegion(app) {
-  var maxRow = app.table.rows.length - 1;
-  var maxCol = app.table.rows[0].cells.length - 1;
+  var bounds =
+    typeof app.getGridBounds === 'function'
+      ? app.getGridBounds()
+      : {
+          rows: app.table.rows.length - 1,
+          cols: app.table.rows[0].cells.length - 1,
+        };
+  var maxRow = bounds.rows;
+  var maxCol = bounds.cols;
   if (maxRow < 1 || maxCol < 1) return;
 
   var startId = app.formatCellId(1, 1);

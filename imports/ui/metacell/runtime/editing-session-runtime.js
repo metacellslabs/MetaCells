@@ -11,11 +11,21 @@ export function ensureEditingSession(app) {
   return app.editingSession;
 }
 
+function getEditingSheetId(app) {
+  if (app && typeof app.getEditingOwnerSheetId === 'function') {
+    return String(app.getEditingOwnerSheetId() || '');
+  }
+  if (app && typeof app.getVisibleSheetId === 'function') {
+    return String(app.getVisibleSheetId() || '');
+  }
+  return String((app && app.activeSheetId) || '');
+}
+
 export function syncEditingSessionWithGridState(app, input, editing) {
   if (!input) return;
   var session = ensureEditingSession(app);
   var cellId = String(input.id || '').toUpperCase();
-  var sheetId = String(app.activeSheetId || '');
+  var sheetId = getEditingSheetId(app);
   if (!cellId || !sheetId) return;
 
   if (editing) {
@@ -42,7 +52,7 @@ export function isEditingCell(app, input) {
   var cellId = String(input.id || '').toUpperCase();
   return !!(
     session.sheetId &&
-    session.sheetId === String(app.activeSheetId || '') &&
+    session.sheetId === getEditingSheetId(app) &&
     session.cellId &&
     session.cellId === cellId
   );
@@ -57,7 +67,7 @@ export function beginEditingSession(app, input, options) {
     opts.draftRaw != null
       ? String(opts.draftRaw)
       : String(input.value == null ? '' : input.value);
-  session.sheetId = String(app.activeSheetId || '');
+  session.sheetId = getEditingSheetId(app);
   session.cellId = cellId;
   session.draftRaw = draftRaw;
   session.origin = String(opts.origin || session.origin || 'cell');
@@ -78,7 +88,7 @@ export function getEditingSessionDraft(app, cellId) {
   var normalizedCellId = String(cellId || '').toUpperCase();
   if (
     !session.sheetId ||
-    session.sheetId !== String(app.activeSheetId || '') ||
+    session.sheetId !== getEditingSheetId(app) ||
     session.cellId !== normalizedCellId
   ) {
     return null;
@@ -91,7 +101,7 @@ export function clearEditingSession(app, options) {
   var opts = options || {};
   var targetCellId = String(opts.cellId || '').toUpperCase();
   var targetSheetId = String(
-    opts.sheetId == null ? app.activeSheetId || '' : opts.sheetId,
+    opts.sheetId == null ? getEditingSheetId(app) || '' : opts.sheetId,
   );
   if (
     targetCellId &&

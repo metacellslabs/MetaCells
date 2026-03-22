@@ -192,7 +192,10 @@ export class FormulaEngine {
       }
       if (raw.charAt(0) !== '=') return this.coerce(raw);
       var equalFormulaSpec = this.parseFormulaDisplayPlaceholder(
-        this.stripOptionalFormulaQuestionMarker(raw.substring(1)),
+        this.stripOptionalFormulaQuestionMarker(raw.substring(1)).replace(
+          /^\s+/,
+          '',
+        ),
       );
       var formulaSource = equalFormulaSpec.content;
       var formulaEmptyMessage = this.getEmptyMentionDependencyMessage(

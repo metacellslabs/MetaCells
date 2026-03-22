@@ -1,8 +1,28 @@
-export function clearSpillVisualState(app) {
+export function clearSpillVisualState(app, options) {
   if (!app || !Array.isArray(app.inputs)) return;
-  app.inputs.forEach((input) => {
+  var opts = options && typeof options === 'object' ? options : {};
+  var rowIndexes = Array.isArray(opts.rowIndexes) ? opts.rowIndexes : null;
+  var rowMap = null;
+  if (rowIndexes && rowIndexes.length) {
+    rowMap = {};
+    for (var i = 0; i < rowIndexes.length; i++) {
+      var rowIndex = Number(rowIndexes[i]);
+      if (!Number.isFinite(rowIndex) || rowIndex < 1) continue;
+      rowMap[rowIndex] = true;
+    }
+  }
+
+  var iterate =
+    typeof app.forEachInput === 'function'
+      ? app.forEachInput.bind(app)
+      : function (callback) {
+          (app.inputs || []).forEach(callback);
+        };
+  iterate((input) => {
     if (!input || !input.parentElement) return;
     var td = input.parentElement;
+    var row = td.parentElement;
+    if (rowMap && !rowMap[row ? row.rowIndex : 0]) return;
     var output = td.querySelector('.cell-output');
     if (output) {
       output.classList.remove('spill-overflow');
@@ -10,7 +30,7 @@ export function clearSpillVisualState(app) {
     }
     td.classList.remove('spill-covered');
     td.classList.remove('spill-source');
-  });
+  }, { includeDetached: false });
 }
 
 export function applySpillVisualStateFromModel(app, sheetId) {
@@ -19,9 +39,12 @@ export function applySpillVisualStateFromModel(app, sheetId) {
   for (var i = 0; i < entries.length; i++) {
     var entry = entries[i];
     if (!entry || !entry.sourceCellId) continue;
-    var sourceInput = app.inputById
-      ? app.inputById[String(entry.sourceCellId || '').toUpperCase()]
-      : null;
+    var sourceInput =
+      typeof app.getCellInput === 'function'
+        ? app.getCellInput(String(entry.sourceCellId || '').toUpperCase())
+        : app.inputById
+          ? app.inputById[String(entry.sourceCellId || '').toUpperCase()]
+          : null;
     if (!sourceInput || !sourceInput.parentElement) continue;
     var sourceTd = sourceInput.parentElement;
     var output = sourceTd.querySelector('.cell-output');
@@ -34,9 +57,12 @@ export function applySpillVisualStateFromModel(app, sheetId) {
       ? entry.coveredCellIds
       : [];
     for (var c = 0; c < coveredCellIds.length; c++) {
-      var coveredInput = app.inputById
-        ? app.inputById[String(coveredCellIds[c] || '').toUpperCase()]
-        : null;
+      var coveredInput =
+        typeof app.getCellInput === 'function'
+          ? app.getCellInput(String(coveredCellIds[c] || '').toUpperCase())
+          : app.inputById
+            ? app.inputById[String(coveredCellIds[c] || '').toUpperCase()]
+            : null;
       if (!coveredInput || !coveredInput.parentElement) continue;
       coveredInput.parentElement.classList.add('spill-covered');
     }

@@ -32,6 +32,12 @@ describe('metacells', function () {
         getCellValue(sheetId, cellId) {
           return cells[cellId] || '';
         },
+        getCellDisplayValue(sheetId, cellId) {
+          return cells[cellId] || '';
+        },
+        getCellComputedValue(sheetId, cellId) {
+          return cells[cellId] || '';
+        },
         getCellState() {
           return 'resolved';
         },
@@ -107,9 +113,13 @@ describe('metacells', function () {
         F2: '=SUMIF(A1:A3, ">15")',
         F3: '=INDEX(C1:D2, 2, 2)',
         G1: '=XLOOKUP("Pro", C1:C2, D1:D2, "missing")',
+        G3: '=SUM(A1:A3)+VLOOKUP("Pro", C1:D2, 2)',
         H1: '=COUNTIF(A1:A3, ">15")',
         H2: '=TRIM("  hello   world  ")',
         H3: '=DATEDIF("2024-01-01", "2024-01-11", "D")',
+        H4: '2024-01-01',
+        H5: '2024-01-11',
+        H6: '=DATEDIF(H4, H5, "D")',
         I1: '=FILTER(C1:D2, C1:C2, "Pro")',
         I2: '=TODAY()',
       };
@@ -137,19 +147,21 @@ describe('metacells', function () {
         formulaEngine.evaluateCell('sheet-1', 'B3', {}),
         'yes',
       );
-      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'E1', {}), '19');
+      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'E1', {}), 19);
       assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'E2', {}), 3);
       assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'E3', {}), 3);
       assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'F1', {}), 5);
       assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'F2', {}), 50);
-      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'F3', {}), '19');
-      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'G1', {}), '19');
+      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'F3', {}), 19);
+      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'G1', {}), 19);
+      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'G3', {}), 79);
       assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'H1', {}), 2);
       assert.strictEqual(
         formulaEngine.evaluateCell('sheet-1', 'H2', {}),
         'hello world',
       );
       assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'H3', {}), 10);
+      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'H6', {}), 10);
       assert.strictEqual(
         formulaEngine.evaluateCell('sheet-1', 'I1', {}),
         'Pro,19',
@@ -485,6 +497,38 @@ describe('metacells', function () {
           placeholder: '',
         },
       );
+    });
+
+    it('accepts formulas with leading whitespace after = before mentions', async function () {
+      const { FormulaEngine } =
+        await import('../imports/engine/formula-engine.js');
+
+      const cells = {
+        F5: '3',
+        B1: '= @F5',
+      };
+      const storageService = {
+        getCellValue(sheetId, cellId) {
+          return cells[cellId] || '';
+        },
+        getCellState() {
+          return 'resolved';
+        },
+        getCellDisplayValue() {
+          return '';
+        },
+        resolveNamedCell() {
+          return null;
+        },
+      };
+      const formulaEngine = new FormulaEngine(
+        storageService,
+        {},
+        () => [{ id: 'sheet-1', name: 'Sheet 1', type: 'sheet' }],
+        Object.keys(cells),
+      );
+
+      assert.strictEqual(formulaEngine.evaluateCell('sheet-1', 'B1', {}), 3);
     });
 
     it('supports display placeholders for empty formula values', async function () {

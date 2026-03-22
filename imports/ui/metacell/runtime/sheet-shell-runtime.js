@@ -6,6 +6,116 @@ function createLucideIconMarkup(paths) {
   );
 }
 
+var NEW_SHEET_GRID_ROWS = 500;
+var NEW_SHEET_GRID_COLS = 26;
+
+function insertSheetTab(app, tab) {
+  var insertAt = app.tabs.findIndex((item) => app.isReportTab(item.id));
+  if (insertAt < 0) insertAt = app.tabs.length;
+  app.tabs.splice(insertAt, 0, tab);
+}
+
+function initializeNewSheet(app, tabId) {
+  if (app.storage && typeof app.storage.setSheetGridSize === 'function') {
+    app.storage.setSheetGridSize(tabId, {
+      rows: NEW_SHEET_GRID_ROWS,
+      cols: NEW_SHEET_GRID_COLS,
+    });
+  }
+}
+
+function populatePerformanceTestSheet(app, sheetId) {
+  if (!app || !sheetId || !app.storage) return;
+  var cols = NEW_SHEET_GRID_COLS;
+  var rows = NEW_SHEET_GRID_ROWS;
+  var dependencyEntries = {};
+  var storageAdapter =
+    app.storage && app.storage.storage && typeof app.storage.storage === 'object'
+      ? app.storage.storage
+      : null;
+  var registerDependencyEntry = function (cellId, cells) {
+    dependencyEntries[String(sheetId || '') + ':' + String(cellId || '').toUpperCase()] = {
+      cells: Array.isArray(cells) ? cells : [],
+      namedRefs: [],
+      channelLabels: [],
+      attachments: [],
+    };
+  };
+
+  for (var colIndex = 1; colIndex <= cols; colIndex++) {
+    var headerCellId = app.columnIndexToLabel(colIndex) + '1';
+    app.storage.setCellValue(sheetId, headerCellId, String(colIndex), {
+      generatedBy: '',
+    });
+  }
+
+  for (var rowIndex = 2; rowIndex <= rows; rowIndex++) {
+    for (var currentColIndex = 1; currentColIndex <= cols; currentColIndex++) {
+      var cellId = app.columnIndexToLabel(currentColIndex) + rowIndex;
+      var formula = '';
+      if (currentColIndex === 1) {
+        formula = '=A' + (rowIndex - 1) + '+1';
+        registerDependencyEntry(cellId, [
+          { sheetId: sheetId, cellId: 'A' + (rowIndex - 1) },
+        ]);
+      } else if (currentColIndex === 2) {
+        formula =
+          '=A' +
+          rowIndex +
+          '+B' +
+          (rowIndex - 1) +
+          '+A' +
+          (rowIndex - 1);
+        registerDependencyEntry(cellId, [
+          { sheetId: sheetId, cellId: 'A' + rowIndex },
+          { sheetId: sheetId, cellId: 'B' + (rowIndex - 1) },
+          { sheetId: sheetId, cellId: 'A' + (rowIndex - 1) },
+        ]);
+      } else {
+        var leftLabel = app.columnIndexToLabel(currentColIndex - 1);
+        var topLabel = app.columnIndexToLabel(currentColIndex);
+        var diagLabel = app.columnIndexToLabel(currentColIndex - 2);
+        formula =
+          '=' +
+          leftLabel +
+          rowIndex +
+          '+' +
+          topLabel +
+          (rowIndex - 1) +
+          '-' +
+          diagLabel +
+          (rowIndex - 1) +
+          '+1';
+        registerDependencyEntry(cellId, [
+          { sheetId: sheetId, cellId: leftLabel + rowIndex },
+          { sheetId: sheetId, cellId: topLabel + (rowIndex - 1) },
+          { sheetId: sheetId, cellId: diagLabel + (rowIndex - 1) },
+        ]);
+      }
+      app.storage.setCellValue(sheetId, cellId, formula, { generatedBy: '' });
+    }
+  }
+
+  if (
+    storageAdapter &&
+    typeof storageAdapter.ensureDependencyGraph === 'function' &&
+    typeof storageAdapter.rebuildReverseDependencyGraph === 'function'
+  ) {
+    var graph = storageAdapter.ensureDependencyGraph();
+    var byCell = graph && graph.byCell ? graph.byCell : {};
+    Object.keys(byCell).forEach(function (key) {
+      if (key.indexOf(String(sheetId || '') + ':') === 0) delete byCell[key];
+    });
+    Object.keys(dependencyEntries).forEach(function (key) {
+      byCell[key] = dependencyEntries[key];
+    });
+    storageAdapter.rebuildReverseDependencyGraph();
+    if (typeof storageAdapter.markDependencyGraphAuthoritative === 'function') {
+      storageAdapter.markDependencyGraphAuthoritative(true, 'perf-seed');
+    }
+  }
+}
+
 function showSheetShellDialog(options) {
   return new Promise((resolve) => {
     var config = options || {};
@@ -119,9 +229,13 @@ function showSheetShellDialog(options) {
 }
 
 export function renderTabs(app) {
+  if (app.useReactShellTabs) {
+    app.refreshNamedCellJumpOptions();
+    return;
+  }
   app.tabsContainer.innerHTML = '';
 
-  app.tabs.forEach((tab) => {
+  app.getWorkbookTabs().forEach((tab) => {
     var button = document.createElement('button');
     button.type = 'button';
     button.className =
@@ -206,19 +320,26 @@ export function reorderTabs(app, dragId, targetId) {
   var nextTargetIndex = app.tabs.findIndex((tab) => tab.id === targetId);
   app.tabs.splice(nextTargetIndex, 0, moving);
   app.storage.saveTabs(app.tabs);
+  app.syncWorkbookShellTabs(app.tabs);
   app.renderTabs();
 }
 
-export async function addTab(app) {
+export async function addTab(app, options) {
+  var opts = options && typeof options === 'object' ? options : {};
+  var isPerformanceTemplate = opts.template === 'performance';
   var sheetCount = app.tabs.filter((tab) => !app.isReportTab(tab.id)).length;
-  var defaultName = 'Sheet ' + (sheetCount + 1);
+  var defaultName = isPerformanceTemplate
+    ? 'Perf Sheet ' + (sheetCount + 1)
+    : 'Sheet ' + (sheetCount + 1);
   var result = await showSheetShellDialog({
-    title: 'New sheet',
-    description: 'Choose a name for the new sheet tab.',
+    title: isPerformanceTemplate ? 'New performance test sheet' : 'New sheet',
+    description: isPerformanceTemplate
+      ? 'Create a large sheet prefilled with dense formulas and dependencies.'
+      : 'Choose a name for the new sheet tab.',
     input: true,
     initialValue: defaultName,
-    placeholder: 'Sheet name',
-    confirmLabel: 'Create sheet',
+    placeholder: isPerformanceTemplate ? 'Performance sheet name' : 'Sheet name',
+    confirmLabel: isPerformanceTemplate ? 'Create perf sheet' : 'Create sheet',
   });
   if (!result.confirmed) return;
 
@@ -226,11 +347,16 @@ export async function addTab(app) {
   name = name.trim() || defaultName;
   var tab = { id: app.storage.makeSheetId(), name: name, type: 'sheet' };
   app.captureHistorySnapshot('tabs');
-
-  var insertAt = app.tabs.findIndex((item) => app.isReportTab(item.id));
-  if (insertAt < 0) insertAt = app.tabs.length;
-  app.tabs.splice(insertAt, 0, tab);
+  insertSheetTab(app, tab);
+  initializeNewSheet(app, tab.id);
+  if (isPerformanceTemplate) {
+    populatePerformanceTestSheet(app, tab.id);
+    if (typeof app.setDisplayMode === 'function') {
+      app.setDisplayMode('values');
+    }
+  }
   app.storage.saveTabs(app.tabs);
+  app.syncWorkbookShellTabs(app.tabs);
   app.switchToSheet(tab.id);
 }
 
@@ -257,6 +383,7 @@ export async function addReportTab(app) {
   app.captureHistorySnapshot('tabs');
   app.tabs.push(tab);
   app.storage.saveTabs(app.tabs);
+  app.syncWorkbookShellTabs(app.tabs);
   app.switchToSheet(tab.id);
 }
 
@@ -291,6 +418,7 @@ export async function renameTabById(app, tabId) {
 
   app.storage.saveTabs(app.tabs);
   app.storage.rewriteFormulaReferencesOnRename(oldName, name);
+  app.syncWorkbookShellTabs(app.tabs);
 
   app.renderTabs();
   app.refreshNamedCellJumpOptions();
@@ -330,6 +458,7 @@ export async function deleteActiveTab(app) {
     return tab.id !== active.id;
   });
   app.storage.saveTabs(app.tabs);
+  app.syncWorkbookShellTabs(app.tabs);
   app.refreshNamedCellJumpOptions();
 
   var fallback =
@@ -339,16 +468,15 @@ export async function deleteActiveTab(app) {
 
 export function switchToSheet(app, sheetId) {
   if (!app.findTabById(sheetId)) return;
+  var crossSheetPickContext = app.getCrossSheetPickContext();
   var keepCrossMention = !!(
-    app.crossTabMentionContext &&
-    sheetId !== app.crossTabMentionContext.sourceSheetId &&
+    crossSheetPickContext &&
+    sheetId !== crossSheetPickContext.sourceSheetId &&
     !app.isReportTab(sheetId)
   );
 
   app.clearActiveInput();
-  app.activeSheetId = sheetId;
-  app.storage.setActiveSheetId(sheetId);
-  if (app.onActiveSheetChange) app.onActiveSheetChange(sheetId);
+  app.setVisibleSheetId(sheetId);
 
   app.renderTabs();
   app.applyViewMode();

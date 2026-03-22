@@ -105,6 +105,13 @@ export const referenceMethods = {
   },
 
   coerce(value) {
-    return isNaN(parseFloat(value)) ? value : parseFloat(value);
+    if (typeof value === 'number') return value;
+    var text = String(value == null ? '' : value).trim();
+    if (!text) return value;
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) {
+      return value;
+    }
+    var numeric = Number(text);
+    return Number.isFinite(numeric) ? numeric : value;
   },
 };

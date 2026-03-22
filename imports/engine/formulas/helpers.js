@@ -129,6 +129,18 @@ function firstScalar(value) {
   return matrix[0][0];
 }
 
+function coerceScalar(value) {
+  const scalar = firstScalar(value);
+  if (typeof scalar === 'number' || typeof scalar === 'boolean') return scalar;
+  const text = String(scalar == null ? '' : scalar).trim();
+  if (!text) return '';
+  if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) {
+    return scalar;
+  }
+  const numeric = Number(text);
+  return Number.isFinite(numeric) ? numeric : scalar;
+}
+
 function isBlank(value) {
   return value == null || String(value).trim() === '';
 }
@@ -249,6 +261,7 @@ export const formulaHelpers = {
   toMatrix,
   flattenValues,
   firstScalar,
+  coerceScalar,
   isBlank,
   isNumberLike,
   matchesCriteria,

@@ -69,7 +69,7 @@ export function applyWorkbookHistorySnapshot(app, serialized) {
   app.isApplyingHistory = true;
   app.computeRequestToken += 1;
   app.clearSelectionRange();
-  app.crossTabMentionContext = null;
+  app.clearCrossSheetPickContext();
   app.pendingAttachmentContext = null;
   app.hideMentionAutocomplete();
   app.hideAddTabMenu();
@@ -85,14 +85,24 @@ export function applyWorkbookHistorySnapshot(app, serialized) {
   }
 
   app.tabs = app.storage.readTabs();
+  if (typeof app.syncWorkbookShellTabs === 'function') {
+    app.syncWorkbookShellTabs(app.tabs);
+  }
   var nextActiveSheetId =
     entry && entry.activeSheetId && app.findTabById(entry.activeSheetId)
       ? String(entry.activeSheetId)
       : app.storage.getActiveSheetId(app.activeSheetId) ||
         (app.tabs[0] && app.tabs[0].id) ||
         'sheet-1';
-  app.activeSheetId = nextActiveSheetId;
-  if (app.onActiveSheetChange) app.onActiveSheetChange(nextActiveSheetId);
+  if (typeof app.setVisibleSheetId === 'function') {
+    app.setVisibleSheetId(nextActiveSheetId, {
+      persist: false,
+      notify: true,
+    });
+  } else {
+    app.activeSheetId = nextActiveSheetId;
+    if (app.onActiveSheetChange) app.onActiveSheetChange(nextActiveSheetId);
+  }
 
   app.ensureGridCapacityForStorage(snapshot);
   app.renderTabs();
@@ -109,7 +119,15 @@ export function applyWorkbookHistorySnapshot(app, serialized) {
   app.refreshNamedCellJumpOptions();
 
   var nextInput =
-    app.inputById[previousCellId] || app.inputById['A1'] || app.inputs[0];
+    (typeof app.getCellInput === 'function'
+      ? app.getCellInput(previousCellId)
+      : app.inputById[previousCellId]) ||
+    (typeof app.getCellInput === 'function'
+      ? app.getCellInput('A1')
+      : app.inputById['A1']) ||
+    (typeof app.getFirstAvailableInput === 'function'
+      ? app.getFirstAvailableInput({ preferredCellId: previousCellId })
+      : null);
   if (!app.isReportActive() && nextInput) {
     app.setActiveInput(nextInput);
   } else {

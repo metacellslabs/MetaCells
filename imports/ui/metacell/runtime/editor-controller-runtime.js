@@ -18,9 +18,16 @@ export function restoreFocusAfterEditingExit(app, options) {
   app.focusActiveEditor();
 }
 
+function getEditingOwnerSheetId(app) {
+  return typeof app.getEditingOwnerSheetId === 'function'
+    ? String(app.getEditingOwnerSheetId() || '')
+    : String(app.activeSheetId || '');
+}
+
 export function enterCellEditing(app, input, options) {
   if (!app || !input) return { status: 'noop', draftRaw: '' };
   var opts = options || {};
+  var origin = String(opts.origin || 'cell');
   if (!app.isEditingCell(input)) {
     app.grid.setEditing(input, true);
   }
@@ -40,7 +47,7 @@ export function enterCellEditing(app, input, options) {
   input.value = draftRaw;
   app.beginEditingSession(input, {
     draftRaw: draftRaw,
-    origin: String(opts.origin || 'cell'),
+    origin: origin,
   });
   if (typeof app.syncActiveEditorValue === 'function') {
     app.syncActiveEditorValue(draftRaw, { syncOverlay: false });
@@ -48,8 +55,11 @@ export function enterCellEditing(app, input, options) {
   if (typeof app.syncEditorOverlay === 'function') {
     app.syncEditorOverlay();
   }
-  app.editorOverlayPendingFocus = true;
-  if (typeof app.focusEditorOverlayInput === 'function') {
+  app.editorOverlayPendingFocus = origin !== 'formula-bar';
+  if (
+    origin !== 'formula-bar' &&
+    typeof app.focusEditorOverlayInput === 'function'
+  ) {
     requestAnimationFrame(() => app.focusEditorOverlayInput());
   }
   app.syncAIDraftLock();
@@ -277,6 +287,33 @@ export function moveAfterCellEditingEnter(app, input, options) {
   app.grid.focusCellByArrow(input, opts.reverse ? 'ArrowUp' : 'ArrowDown');
 }
 
+export function moveAfterCellEditingArrow(app, input, key) {
+  if (
+    !app ||
+    !input ||
+    !app.grid ||
+    typeof app.grid.focusCellByArrow !== 'function'
+  ) {
+    return;
+  }
+  app.clearSelectionRange();
+  app.grid.focusCellByArrow(input, key);
+}
+
+export function handleCellEditingArrowNavigate(app, input, key, options) {
+  if (!app || !input) return { status: 'noop' };
+  var opts = options || {};
+  var raw = String(input.value == null ? '' : input.value);
+  var result = resolveCellEditingExit(app, input, {
+    wasEditing: true,
+    rawValue: raw,
+    origin: String(opts.origin || 'cell'),
+    reason: 'arrow',
+  });
+  moveAfterCellEditingArrow(app, input, key);
+  return result;
+}
+
 export function resolveCellEditingExit(app, input, options) {
   if (!app || !input) return { status: 'noop' };
   var opts = options || {};
@@ -308,12 +345,13 @@ export function resolveCellEditingExit(app, input, options) {
     restoreFocusAfterEditingExit(app);
     return { status: 'suppressed' };
   }
+  var crossSheetPickContext = app.getCrossSheetPickContext();
   if (
-    app.crossTabMentionContext &&
-    app.activeSheetId !== app.crossTabMentionContext.sourceSheetId
+    crossSheetPickContext &&
+    getEditingOwnerSheetId(app) !== crossSheetPickContext.sourceSheetId
   ) {
     if (app.activeInput === input && app.formulaInput) {
-      app.formulaInput.value = app.crossTabMentionContext.value;
+      app.formulaInput.value = crossSheetPickContext.value;
     }
     delete app.editStartRawByCell[input.id];
     restoreFocusAfterEditingExit(app);

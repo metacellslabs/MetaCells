@@ -1,5 +1,6 @@
 import { Meteor } from 'meteor/meteor';
 import { WebApp } from 'meteor/webapp';
+import { getArtifactText } from '../artifacts/index.js';
 import { ChannelEvents } from './events.js';
 import { getArtifactBinary } from '../artifacts/index.js';
 
@@ -24,6 +25,11 @@ function decodeDataUrl(dataUrl) {
 function contentDisposition(fileName) {
   const raw = String(fileName || 'attachment').replace(/[\r\n"]/g, '_');
   return `inline; filename="${raw}"`;
+}
+
+function isSafeInternalPath(value) {
+  const text = String(value || '').trim();
+  return /^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$/.test(text);
 }
 
 export function registerChannelEventAttachmentRoute() {
@@ -58,12 +64,55 @@ export function registerChannelEventAttachmentRoute() {
         attachment && attachment.binaryArtifactId
           ? await getArtifactBinary(String(attachment.binaryArtifactId || ''))
           : null;
+      const textContent =
+        !binary && attachment && attachment.contentArtifactId
+          ? await getArtifactText(String(attachment.contentArtifactId || ''))
+          : '';
       const legacy =
         !binary && attachment && attachment.downloadUrl
           ? decodeDataUrl(attachment.downloadUrl)
           : null;
+      const preview =
+        !binary && !legacy && attachment && attachment.previewUrl
+          ? decodeDataUrl(attachment.previewUrl)
+          : null;
 
-      const served = binary || legacy;
+      const served = binary || legacy || preview;
+
+      if (
+        attachment &&
+        !served &&
+        String(textContent || '') !== ''
+      ) {
+        const body = Buffer.from(String(textContent || ''), 'utf8');
+        res.statusCode = 200;
+        res.setHeader(
+          'Content-Type',
+          String(attachment.type || 'text/plain; charset=utf-8') ||
+            'text/plain; charset=utf-8',
+        );
+        res.setHeader('Content-Length', String(body.length));
+        res.setHeader('Content-Disposition', contentDisposition(attachment.name));
+        res.end(body);
+        return;
+      }
+
+      if (
+        attachment &&
+        !served &&
+        attachment.previewUrl &&
+        String(attachment.previewUrl) !== String(req.url || '') &&
+        String(attachment.previewUrl) !==
+          `/channel-events/${encodeURIComponent(eventId)}/attachments/${encodeURIComponent(attachmentId)}`
+      ) {
+        const target = String(attachment.previewUrl || '').trim();
+        if (/^https?:\/\//i.test(target) || isSafeInternalPath(target)) {
+          res.statusCode = 302;
+          res.setHeader('Location', target);
+          res.end();
+          return;
+        }
+      }
 
       if (!attachment || !served || !served.buffer || !served.buffer.length) {
         res.statusCode = 404;

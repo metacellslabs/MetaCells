@@ -23,6 +23,12 @@ function saveAssistantDraft(app, value) {
   } catch (_error) {}
 }
 
+function setAssistantDraftState(app, value) {
+  app.assistantDraft = String(value == null ? '' : value);
+  saveAssistantDraft(app, app.assistantDraft);
+  renderAssistantPanel(app);
+}
+
 function arrayBufferToBase64(buffer) {
   var bytes = new Uint8Array(buffer || new ArrayBuffer(0));
   var chunkSize = 0x8000;
@@ -45,6 +51,41 @@ function openAssistantFilePicker(app) {
     }
   } catch (_error) {}
   input.click();
+}
+
+function uploadAssistantFile(app, file) {
+  if (!file) return Promise.resolve();
+  app.assistantBusy = true;
+  renderAssistantPanel(app);
+  return file
+    .arrayBuffer()
+    .then(function (buffer) {
+      return Meteor.callAsync(
+        'assistant.uploadFile',
+        app.sheetDocumentId,
+        String(file.name || 'Attached file'),
+        String(file.type || ''),
+        arrayBufferToBase64(buffer),
+      );
+    })
+    .then(function (upload) {
+      app.assistantUploads = (app.assistantUploads || []).concat([upload]);
+      renderAssistantPanel(app);
+    })
+    .catch(function (error) {
+      app.assistantMessages = app.assistantMessages || [];
+      app.assistantMessages.push({
+        role: 'assistant',
+        content:
+          'Upload error: ' +
+          String(error && error.message ? error.message : error),
+      });
+      renderAssistantPanel(app);
+    })
+    .finally(function () {
+      app.assistantBusy = false;
+      renderAssistantPanel(app);
+    });
 }
 
 function loadAssistantConversation(app) {
@@ -108,312 +149,109 @@ function scrollAssistantMessagesToBottom(messagesWrap) {
 
 function ensureAssistantPanel(app) {
   if (app.assistantPanel) return app.assistantPanel;
-  var panel = document.createElement('div');
-  panel.className = 'assistant-chat-panel';
-  panel.style.display = 'none';
-  panel.innerHTML =
-    "<div class='assistant-chat-head'>" +
-    "<div class='assistant-chat-title-wrap'>" +
-    "<h2>AI Assistant</h2>" +
-    '</div>' +
-    "<div class='assistant-chat-head-actions'>" +
-    "<label class='assistant-chat-provider assistant-chat-provider-compact' aria-label='Assistant provider'>" +
-    "<select name='assistant-provider'></select>" +
-    "<span class='assistant-chat-provider-arrow' aria-hidden='true'>▾</span>" +
-    '</label>' +
-    "<div class='assistant-chat-status'></div>" +
-    "<button type='button' class='secondary assistant-chat-head-button' data-action='attach-file'>Attach file</button>" +
-    "<button type='button' class='assistant-chat-close' data-action='close' aria-label='Close'>×</button>" +
-    '</div>' +
-    '</div>' +
-    "<div class='assistant-chat-meta'></div>" +
-    "<div class='assistant-chat-uploads'></div>" +
-    "<div class='assistant-chat-messages'></div>" +
-    "<div class='assistant-chat-activity'></div>" +
-    "<form class='assistant-chat-compose'>" +
-    "<textarea name='message' rows='4' placeholder='Ask AI to analyze or update this workbook'></textarea>" +
-    "<input type='file' name='assistant-file' class='assistant-chat-file-input' tabindex='-1' aria-hidden='true' />" +
-    "<div class='assistant-chat-actions'>" +
-    "<div class='assistant-chat-hint'>Use Cmd/Ctrl+Enter to send. Ask for workbook edits, reports, schedules, formatting, or channel actions.</div>" +
-    "<button type='button' class='secondary' data-action='clear'>Clear</button>" +
-    "<button type='submit'>Send</button>" +
-    '</div>' +
-    '</form>';
-  document.body.appendChild(panel);
-  panel.addEventListener('click', function (event) {
-    var actionTarget =
-      event.target && event.target.closest
-        ? event.target.closest('[data-action]')
-        : null;
-    if (!actionTarget) return;
-    var action = String(actionTarget.getAttribute('data-action') || '');
-    if (action === 'close') {
-      hideAssistantPanel(app);
-      return;
-    }
-    if (action === 'clear') {
-      Meteor.callAsync('assistant.clearConversation', app.sheetDocumentId).catch(
-        function () {},
-      );
-      app.assistantMessages = [];
-      app.assistantActivity = [];
-      app.assistantUploads = [];
-      renderAssistantPanel(app);
-    }
-    if (action === 'attach-file') {
-      event.preventDefault();
-      event.stopPropagation();
-      openAssistantFilePicker(app);
-      return;
-    }
-    if (action === 'remove-upload') {
-      event.preventDefault();
-      event.stopPropagation();
-      var uploadId = String(actionTarget.getAttribute('data-upload-id') || '');
-      if (!uploadId) return;
-      Meteor.callAsync('assistant.removeUpload', app.sheetDocumentId, uploadId)
-        .then(function (result) {
-          app.assistantUploads =
-            result && Array.isArray(result.uploads) ? result.uploads : [];
-          renderAssistantPanel(app);
-        })
-        .catch(function () {});
-    }
-  });
-  panel
-    .querySelector('.assistant-chat-compose')
-    .addEventListener('submit', function (event) {
-      event.preventDefault();
-      submitAssistantPrompt(app);
-    });
-  var textarea = panel.querySelector("textarea[name='message']");
-  if (textarea) {
-    textarea.value = loadAssistantDraft(app);
-    textarea.addEventListener('input', function () {
-      saveAssistantDraft(app, textarea.value);
-    });
-    textarea.addEventListener('keydown', function (event) {
-      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-        event.preventDefault();
-        submitAssistantPrompt(app);
-      }
-    });
-  }
-  var providerSelect = panel.querySelector("select[name='assistant-provider']");
-  if (providerSelect) {
-    providerSelect.addEventListener('change', function () {
-      var providerId = String(providerSelect.value || '');
-      if (!providerId) return;
-      app.assistantBusy = true;
-      renderAssistantPanel(app);
-      Meteor.callAsync('settings.setActiveAIProvider', providerId)
-        .then(function () {
-          return refreshAssistantManifest(app);
-        })
-        .catch(function (error) {
-          app.assistantMessages = app.assistantMessages || [];
-          app.assistantMessages.push({
-            role: 'assistant',
-            content:
-              'Provider switch error: ' +
-              String(error && error.message ? error.message : error),
-            createdAt: new Date().toISOString(),
-          });
-        })
-        .finally(function () {
-          app.assistantBusy = false;
-          renderAssistantPanel(app);
-        });
-    });
-  }
-  var fileInput = panel.querySelector("input[name='assistant-file']");
-  if (fileInput) {
-    fileInput.addEventListener('change', function () {
-      var file = fileInput.files && fileInput.files[0];
-      if (!file) return;
-      app.assistantBusy = true;
-      renderAssistantPanel(app);
-      file
-        .arrayBuffer()
-        .then(function (buffer) {
-          return Meteor.callAsync(
-            'assistant.uploadFile',
-            app.sheetDocumentId,
-            String(file.name || 'Attached file'),
-            String(file.type || ''),
-            arrayBufferToBase64(buffer),
-          );
-        })
-        .then(function (upload) {
-          app.assistantUploads = (app.assistantUploads || []).concat([
-            upload,
-          ]);
-          renderAssistantPanel(app);
-        })
-        .catch(function (error) {
-          app.assistantMessages = app.assistantMessages || [];
-          app.assistantMessages.push({
-            role: 'assistant',
-            content:
-              'Upload error: ' +
-              String(error && error.message ? error.message : error),
-          });
-          renderAssistantPanel(app);
-        })
-        .finally(function () {
-          app.assistantBusy = false;
-          fileInput.value = '';
-          renderAssistantPanel(app);
-        });
-    });
-  }
+  var panel = document.querySelector('.assistant-chat-panel');
+  if (!panel) return null;
   app.assistantPanel = panel;
   return panel;
 }
 
 function renderAssistantPanel(app) {
   var panel = ensureAssistantPanel(app);
-  var meta = panel.querySelector('.assistant-chat-meta');
-  var status = panel.querySelector('.assistant-chat-status');
-  var providerSelect = panel.querySelector("select[name='assistant-provider']");
-  var uploadsWrap = panel.querySelector('.assistant-chat-uploads');
+  if (!panel) return;
   var messagesWrap = panel.querySelector('.assistant-chat-messages');
-  var activityWrap = panel.querySelector('.assistant-chat-activity');
-  var metaParts = [];
-  if (app.assistantBusy) metaParts.push('Working...');
-  if (status) {
-    var statusText = getAssistantStatusText(app);
-    status.textContent = statusText;
-    status.style.display = statusText ? 'inline-flex' : 'none';
-  }
-  meta.textContent = metaParts.join(' · ');
-  if (providerSelect) {
-    providerSelect.innerHTML = '';
-    (app.assistantManifest &&
-    Array.isArray(app.assistantManifest.providers)
-      ? app.assistantManifest.providers
-      : []
-    ).forEach(function (provider) {
-      if (!provider) return;
-      var option = document.createElement('option');
-      option.value = String(provider.id || '');
-      option.textContent = String(provider.name || provider.id || '');
-      if (
-        String(provider.id || '') ===
-        String((app.assistantManifest && app.assistantManifest.activeProviderId) || '')
-      ) {
-        option.selected = true;
-      }
-      providerSelect.appendChild(option);
-    });
-    providerSelect.disabled = !!app.assistantBusy;
-  }
-  uploadsWrap.innerHTML = '';
-  (Array.isArray(app.assistantUploads) ? app.assistantUploads : []).forEach(
-    function (item) {
-      var chip = document.createElement('div');
-      chip.className = 'assistant-chat-upload-chip';
-      var chipLabel = document.createElement('span');
-      chipLabel.className = 'assistant-chat-upload-chip-label';
-      chipLabel.textContent = String((item && item.name) || 'Uploaded file');
-      chip.appendChild(chipLabel);
-      var remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'assistant-chat-upload-remove';
-      remove.setAttribute('data-action', 'remove-upload');
-      remove.setAttribute('data-upload-id', String((item && item.id) || ''));
-      remove.setAttribute('aria-label', 'Remove uploaded file');
-      remove.textContent = '×';
-      chip.appendChild(remove);
-      uploadsWrap.appendChild(chip);
-    },
-  );
-  uploadsWrap.style.display =
-    Array.isArray(app.assistantUploads) && app.assistantUploads.length
-      ? 'flex'
-      : 'none';
-  messagesWrap.innerHTML = '';
-  var renderedMessages = Array.isArray(app.assistantMessages)
-    ? app.assistantMessages
-    : [];
-  if (!renderedMessages.length) {
-    var empty = document.createElement('div');
-    empty.className = 'assistant-chat-empty';
-    empty.innerHTML =
-      "<strong>Ask for workbook changes directly.</strong><span>Try: build a report tab, rewrite these formulas using @mentions, add schedules, or attach an uploaded file into a cell.</span>";
-    messagesWrap.appendChild(empty);
-  }
-  renderedMessages.forEach(function (item) {
-      var role = String((item && item.role) || 'assistant');
-      var node = document.createElement('div');
-      node.className = 'assistant-chat-message assistant-chat-message-' + role;
-      var label = document.createElement('div');
-      label.className = 'assistant-chat-message-role';
-      label.textContent = role === 'user' ? '' : 'Assistant';
-      var time = formatAssistantMessageTime(item);
-      if (time) {
-        var stamp = document.createElement('span');
-        stamp.className = 'assistant-chat-message-time';
-        stamp.textContent = time;
-        label.appendChild(stamp);
-      }
-      if (role !== 'user' || time) {
-        node.appendChild(label);
-      }
-      var body = document.createElement('div');
-      body.className = 'assistant-chat-message-body';
-      body.textContent = String((item && item.content) || '');
-      node.appendChild(body);
-      messagesWrap.appendChild(node);
-    });
-  if (app.assistantBusy) {
-    var thinking = document.createElement('div');
-    thinking.className =
-      'assistant-chat-message assistant-chat-message-assistant assistant-chat-message-thinking';
-    var thinkingBody = document.createElement('div');
-    thinkingBody.className = 'assistant-chat-message-body assistant-chat-thinking-body';
-    thinkingBody.innerHTML =
-      "<span class='assistant-chat-thinking-dot'></span>" +
-      "<span class='assistant-chat-thinking-dot'></span>" +
-      "<span class='assistant-chat-thinking-dot'></span>";
-    thinking.appendChild(thinkingBody);
-    messagesWrap.appendChild(thinking);
-  }
-  activityWrap.innerHTML = '';
-  var renderedActivity = Array.isArray(app.assistantActivity)
-    ? app.assistantActivity
-    : [];
-  if (renderedActivity.length) {
-    var activityHeader = document.createElement('div');
-    activityHeader.className = 'assistant-chat-activity-heading';
-    activityHeader.textContent = 'Recent tool activity';
-    activityWrap.appendChild(activityHeader);
-  }
-  renderedActivity.forEach(function (item) {
-      var card = document.createElement('div');
-      card.className = 'assistant-chat-activity-card';
-      var title = document.createElement('div');
-      title.className = 'assistant-chat-activity-title';
-      title.textContent = String((item && item.assistantMessage) || 'Tool activity');
-      card.appendChild(title);
-      var toolResults = Array.isArray(item && item.toolResults)
-        ? item.toolResults
-        : [];
-      toolResults.forEach(function (result) {
-        var line = document.createElement('div');
-        line.className =
-          'assistant-chat-activity-line' +
-          (result && result.ok === false ? ' is-error' : '');
-        line.textContent =
-          String((result && result.name) || '') +
-          (result && result.ok === false
-            ? ': ' + String(result.error || 'Failed')
-            : ': ok');
-        card.appendChild(line);
+  if (app && typeof app.publishUiState === 'function') app.publishUiState();
+  if (messagesWrap) {
+    if (
+      typeof window !== 'undefined' &&
+      typeof window.requestAnimationFrame === 'function'
+    ) {
+      window.requestAnimationFrame(function () {
+        scrollAssistantMessagesToBottom(messagesWrap);
       });
-      activityWrap.appendChild(card);
-    });
-  scrollAssistantMessagesToBottom(messagesWrap);
+    } else {
+      scrollAssistantMessagesToBottom(messagesWrap);
+    }
+  }
+}
+
+export function getAssistantUiState(app) {
+  var manifest =
+    app && app.assistantManifest && typeof app.assistantManifest === 'object'
+      ? app.assistantManifest
+      : null;
+  var providers =
+    manifest && Array.isArray(manifest.providers)
+      ? manifest.providers
+          .map(function (provider) {
+            return provider && typeof provider === 'object'
+              ? {
+                  id: String(provider.id || ''),
+                  name: String(provider.name || provider.id || ''),
+                }
+              : null;
+          })
+          .filter(Boolean)
+      : [];
+  var messages = Array.isArray(app && app.assistantMessages)
+    ? app.assistantMessages.map(function (item) {
+        return item && typeof item === 'object'
+          ? {
+              role: String(item.role || ''),
+              content: String(item.content || ''),
+              time: formatAssistantMessageTime(item),
+            }
+          : null;
+      }).filter(Boolean)
+    : [];
+  var uploads = Array.isArray(app && app.assistantUploads)
+    ? app.assistantUploads.map(function (item) {
+        return item && typeof item === 'object'
+          ? {
+              id: String(item.id || ''),
+              name: String(item.name || 'Uploaded file'),
+            }
+          : null;
+      }).filter(Boolean)
+    : [];
+  var activity = Array.isArray(app && app.assistantActivity)
+    ? app.assistantActivity.map(function (item) {
+        var toolResults = Array.isArray(item && item.toolResults)
+          ? item.toolResults
+              .map(function (result) {
+                return result && typeof result === 'object'
+                  ? {
+                      name: String(result.name || ''),
+                      ok: result.ok !== false,
+                      error: String(result.error || ''),
+                    }
+                  : null;
+              })
+              .filter(Boolean)
+          : [];
+        return item && typeof item === 'object'
+          ? {
+              assistantMessage: String(
+                item.assistantMessage || 'Tool activity',
+              ),
+              toolResults: toolResults,
+            }
+          : null;
+      }).filter(Boolean)
+    : [];
+  return {
+    open: app && app.assistantPanelOpen === true,
+    busy: app && app.assistantBusy === true,
+    draft: String((app && app.assistantDraft) || ''),
+    statusText: getAssistantStatusText(app),
+    metaText: app && app.assistantBusy ? 'Working...' : '',
+    activeProviderId: String(
+      (manifest && manifest.activeProviderId) || '',
+    ),
+    providers: providers,
+    uploads: uploads,
+    messages: messages,
+    activity: activity,
+  };
 }
 
 function syncAssistantWorkbook(app, workbook) {
@@ -427,6 +265,9 @@ function syncAssistantWorkbook(app, workbook) {
   }
   app.storage.storage.replaceAll(workbook);
   app.tabs = app.storage.readTabs();
+  if (typeof app.syncWorkbookShellTabs === 'function') {
+    app.syncWorkbookShellTabs(app.tabs);
+  }
   app.renderTabs();
   var nextActiveSheetId = String((workbook && workbook.activeTabId) || '');
   if (!nextActiveSheetId) {
@@ -452,16 +293,16 @@ function getAssistantConversation(app) {
   );
 }
 
-function submitAssistantPrompt(app) {
-  var panel = ensureAssistantPanel(app);
-  var textarea = panel.querySelector("textarea[name='message']");
-  var value = String((textarea && textarea.value) || '').trim();
+function submitAssistantPrompt(app, nextValue) {
+  var value = String(
+    typeof nextValue === 'undefined' ? app.assistantDraft || '' : nextValue,
+  ).trim();
   if (!value || app.assistantBusy) return;
   app.assistantBusy = true;
   app.assistantMessages = app.assistantMessages || [];
   app.assistantActivity = app.assistantActivity || [];
   app.assistantMessages.push({ role: 'user', content: value });
-  textarea.value = '';
+  app.assistantDraft = '';
   saveAssistantDraft(app, '');
   renderAssistantPanel(app);
   Meteor.callAsync('assistant.chat', {
@@ -509,23 +350,27 @@ function submitAssistantPrompt(app) {
 
 export function setupAssistantPanel(app) {
   var panel = ensureAssistantPanel(app);
+  if (!panel) return;
   app.assistantMessages = [];
   app.assistantActivity = [];
   app.assistantUploads = [];
   app.assistantBusy = false;
-  var textarea = panel.querySelector("textarea[name='message']");
-  if (textarea) textarea.value = loadAssistantDraft(app);
+  app.assistantPanelOpen = false;
+  app.assistantDraft = loadAssistantDraft(app);
   loadAssistantConversation(app);
   refreshAssistantManifest(app);
+  if (app && typeof app.publishUiState === 'function') app.publishUiState();
 }
 
 export function toggleAssistantPanel(app) {
   var panel = ensureAssistantPanel(app);
-  if (panel.style.display === 'none') {
-    panel.style.display = 'flex';
+  if (!panel) return;
+  if (!app.assistantPanelOpen) {
+    app.assistantPanelOpen = true;
     renderAssistantPanel(app);
     var textarea = panel.querySelector("textarea[name='message']");
     if (textarea && typeof textarea.focus === 'function') textarea.focus();
+    if (app && typeof app.publishUiState === 'function') app.publishUiState();
     return;
   }
   hideAssistantPanel(app);
@@ -533,5 +378,69 @@ export function toggleAssistantPanel(app) {
 
 export function hideAssistantPanel(app) {
   if (!app.assistantPanel) return;
-  app.assistantPanel.style.display = 'none';
+  app.assistantPanelOpen = false;
+  if (app && typeof app.publishUiState === 'function') app.publishUiState();
+}
+
+export function updateAssistantDraft(app, value) {
+  setAssistantDraftState(app, value);
+}
+
+export function submitAssistantDraft(app, value) {
+  return submitAssistantPrompt(app, value);
+}
+
+export function clearAssistantConversation(app) {
+  Meteor.callAsync('assistant.clearConversation', app.sheetDocumentId).catch(
+    function () {},
+  );
+  app.assistantMessages = [];
+  app.assistantActivity = [];
+  app.assistantUploads = [];
+  renderAssistantPanel(app);
+}
+
+export function setAssistantProvider(app, providerId) {
+  var normalizedProviderId = String(providerId || '');
+  if (!normalizedProviderId) return Promise.resolve();
+  app.assistantBusy = true;
+  renderAssistantPanel(app);
+  return Meteor.callAsync('settings.setActiveAIProvider', normalizedProviderId)
+    .then(function () {
+      return refreshAssistantManifest(app);
+    })
+    .catch(function (error) {
+      app.assistantMessages = app.assistantMessages || [];
+      app.assistantMessages.push({
+        role: 'assistant',
+        content:
+          'Provider switch error: ' +
+          String(error && error.message ? error.message : error),
+        createdAt: new Date().toISOString(),
+      });
+    })
+    .finally(function () {
+      app.assistantBusy = false;
+      renderAssistantPanel(app);
+    });
+}
+
+export function removeAssistantUpload(app, uploadId) {
+  var normalizedUploadId = String(uploadId || '');
+  if (!normalizedUploadId) return Promise.resolve();
+  return Meteor.callAsync(
+    'assistant.removeUpload',
+    app.sheetDocumentId,
+    normalizedUploadId,
+  )
+    .then(function (result) {
+      app.assistantUploads =
+        result && Array.isArray(result.uploads) ? result.uploads : [];
+      renderAssistantPanel(app);
+    })
+    .catch(function () {});
+}
+
+export function uploadAssistantFileFromPicker(app, file) {
+  return uploadAssistantFile(app, file);
 }

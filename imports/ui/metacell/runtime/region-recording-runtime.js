@@ -46,8 +46,14 @@ function getRecordingBounds(app) {
     app.selectionRange.endCol,
     app.selectionRange.endRow,
   );
-  var startInput = app.inputById && app.inputById[startId];
-  var endInput = app.inputById && app.inputById[endId];
+  var startInput =
+    typeof app.getCellInput === 'function'
+      ? app.getCellInput(startId)
+      : app.inputById && app.inputById[startId];
+  var endInput =
+    typeof app.getCellInput === 'function'
+      ? app.getCellInput(endId)
+      : app.inputById && app.inputById[endId];
   if (!startInput || !endInput) return null;
   var startCell = startInput.parentElement;
   var endCell = endInput.parentElement;
@@ -71,15 +77,11 @@ function getRecordingBounds(app) {
 }
 
 function hasVisibleRegionSelection(app) {
-  if (!app || !app.table) return false;
-  if (!app.selectionRange) return false;
-  if (
+  if (!app || !app.selectionRange) return false;
+  return !(
     app.selectionRange.startCol === app.selectionRange.endCol &&
     app.selectionRange.startRow === app.selectionRange.endRow
-  ) {
-    return false;
-  }
-  return app.table.querySelectorAll('td.selected-range').length > 1;
+  );
 }
 
 function ensureRecordingOverlay(app) {

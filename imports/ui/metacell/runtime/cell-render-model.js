@@ -1,6 +1,32 @@
 import { describeCellSchedule } from '../../../lib/cell-schedule.js';
 import { parseChannelSendCommand } from '../../../api/channels/commands.js';
 
+var dateFormatterCache = {};
+var numberFormatterCache = {};
+
+function getCachedDateFormatter(localeKey) {
+  var cacheKey = String(localeKey || 'default');
+  if (!dateFormatterCache[cacheKey]) {
+    dateFormatterCache[cacheKey] = new Intl.DateTimeFormat(undefined, {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+  }
+  return dateFormatterCache[cacheKey];
+}
+
+function getCachedNumberFormatter(localeKey, options) {
+  var cacheKey = String(localeKey || 'default') + '::' + JSON.stringify(options || {});
+  if (!numberFormatterCache[cacheKey]) {
+    numberFormatterCache[cacheKey] = new Intl.NumberFormat(
+      undefined,
+      options || {},
+    );
+  }
+  return numberFormatterCache[cacheKey];
+}
+
 function parseNumericDisplayValue(value) {
   if (typeof value === 'number' && isFinite(value)) return value;
   var text = String(value == null ? '' : value).trim();
@@ -88,11 +114,7 @@ export function formatCellDisplay(app, sheetId, cellId, displayValue, options) {
   if (format === 'date') {
     var dateValue = parseDateDisplayValue(displayValue);
     if (!dateValue) return displayValue;
-    return new Intl.DateTimeFormat(undefined, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(dateValue);
+    return getCachedDateFormatter('default').format(dateValue);
   }
   var numericValue = parseNumericDisplayValue(displayValue);
   if (numericValue == null) return displayValue;
@@ -101,7 +123,7 @@ export function formatCellDisplay(app, sheetId, cellId, displayValue, options) {
     format === 'currency_eur' ||
     format === 'currency_gbp'
   ) {
-    return new Intl.NumberFormat(undefined, {
+    return getCachedNumberFormatter('default', {
       style: 'currency',
       currency:
         format === 'currency_eur'
@@ -114,7 +136,7 @@ export function formatCellDisplay(app, sheetId, cellId, displayValue, options) {
     }).format(numericValue);
   }
   if (format === 'percent' || format === 'percent_2') {
-    return new Intl.NumberFormat(undefined, {
+    return getCachedNumberFormatter('default', {
       style: 'percent',
       minimumFractionDigits:
         decimalPlaces != null ? decimalPlaces : format === 'percent_2' ? 2 : 0,
@@ -124,7 +146,7 @@ export function formatCellDisplay(app, sheetId, cellId, displayValue, options) {
   }
   if (format !== 'number' && format !== 'number_0' && format !== 'number_2')
     return displayValue;
-  return new Intl.NumberFormat(undefined, {
+  return getCachedNumberFormatter('default', {
     minimumFractionDigits:
       decimalPlaces != null ? decimalPlaces : format === 'number_2' ? 2 : 0,
     maximumFractionDigits:
@@ -234,11 +256,18 @@ export function buildCellRenderModel(app, sheetId, cellId, options) {
   var opts = options && typeof options === 'object' ? options : {};
   var targetSheetId = String(sheetId || '');
   var normalizedCellId = String(cellId || '').toUpperCase();
+  var rawSource = Object.prototype.hasOwnProperty.call(opts, 'raw')
+    ? opts.raw
+    : app.storage.getCellValue(targetSheetId, normalizedCellId);
   var raw = String(
-    Object.prototype.hasOwnProperty.call(opts, 'raw')
-      ? opts.raw
-      : app.storage.getCellValue(targetSheetId, normalizedCellId) || '',
+    rawSource == null ? '' : rawSource,
   );
+  var storedDisplaySource = Object.prototype.hasOwnProperty.call(
+    opts,
+    'storedDisplay',
+  )
+    ? opts.storedDisplay
+    : app.storage.getCellDisplayValue(targetSheetId, normalizedCellId);
   var isFormula =
     !!raw &&
     (raw.charAt(0) === '=' ||
@@ -246,30 +275,37 @@ export function buildCellRenderModel(app, sheetId, cellId, options) {
       raw.charAt(0) === '#' ||
       raw.charAt(0) === "'");
   var storedDisplay = String(
-    Object.prototype.hasOwnProperty.call(opts, 'storedDisplay')
-      ? opts.storedDisplay
-      : app.storage.getCellDisplayValue(targetSheetId, normalizedCellId) || '',
+    storedDisplaySource == null ? '' : storedDisplaySource,
   );
+  var storedComputedSource = Object.prototype.hasOwnProperty.call(
+    opts,
+    'storedComputed',
+  )
+    ? opts.storedComputed
+    : app.storage.getCellComputedValue(targetSheetId, normalizedCellId);
   var storedComputed = String(
-    Object.prototype.hasOwnProperty.call(opts, 'storedComputed')
-      ? opts.storedComputed
-      : app.storage.getCellComputedValue(targetSheetId, normalizedCellId) || '',
+    storedComputedSource == null ? '' : storedComputedSource,
   );
+  var cellStateSource = Object.prototype.hasOwnProperty.call(opts, 'cellState')
+    ? opts.cellState
+    : app.storage.getCellState(targetSheetId, normalizedCellId);
   var cellState = String(
-    Object.prototype.hasOwnProperty.call(opts, 'cellState')
-      ? opts.cellState
-      : app.storage.getCellState(targetSheetId, normalizedCellId) || '',
+    cellStateSource == null ? '' : cellStateSource,
   );
+  var errorHintSource = Object.prototype.hasOwnProperty.call(opts, 'errorHint')
+    ? opts.errorHint
+    : app.storage.getCellError(targetSheetId, normalizedCellId);
   var errorHint = String(
-    Object.prototype.hasOwnProperty.call(opts, 'errorHint')
-      ? opts.errorHint
-      : app.storage.getCellError(targetSheetId, normalizedCellId) || '',
+    errorHintSource == null ? '' : errorHintSource,
   );
+  var generatedBySource = Object.prototype.hasOwnProperty.call(
+    opts,
+    'generatedBy',
+  )
+    ? opts.generatedBy
+    : app.storage.getGeneratedCellSource(targetSheetId, normalizedCellId);
   var generatedBy = String(
-    Object.prototype.hasOwnProperty.call(opts, 'generatedBy')
-      ? opts.generatedBy
-      : app.storage.getGeneratedCellSource(targetSheetId, normalizedCellId) ||
-          '',
+    generatedBySource == null ? '' : generatedBySource,
   );
   var cellSchedule = Object.prototype.hasOwnProperty.call(opts, 'cellSchedule')
     ? opts.cellSchedule

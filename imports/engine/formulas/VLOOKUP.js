@@ -21,7 +21,7 @@ export default defineFormula({
       if (String(firstCell) === String(lookupValue)) {
         return typeof row[columnIndex - 1] === 'undefined'
           ? ''
-          : row[columnIndex - 1];
+          : helpers.coerceScalar(row[columnIndex - 1]);
       }
       if (
         !exactMatch &&
@@ -37,7 +37,7 @@ export default defineFormula({
     if (approximateRow) {
       return typeof approximateRow[columnIndex - 1] === 'undefined'
         ? ''
-        : approximateRow[columnIndex - 1];
+        : helpers.coerceScalar(approximateRow[columnIndex - 1]);
     }
     return '';
   },

@@ -1,0 +1,667 @@
+import { Meteor } from 'meteor/meteor';
+import { getRegisteredChannelConnectorById } from '../connectors/index.js';
+import {
+  AppSettings,
+  DEFAULT_SETTINGS_ID,
+  ensureDefaultSettings,
+} from '../../settings/index.js';
+import {
+  normalizeChannelLabel,
+  CHANNEL_POLL_INTERVAL_MS,
+} from '../mentioning.js';
+import {
+  insertChannelEvent,
+  buildChannelEventPreview,
+} from '../events.js';
+import { getRegisteredChannelHandlerById } from './handlers/index.js';
+
+const activeChannelPolls = new Set();
+const activeChannelSubscriptions = new Map();
+const activeChannelSubscriptionStarts = new Set();
+let channelPollingWorkerStarted = false;
+const CHANNEL_WORKER_LEASE_MS = Math.max(
+  CHANNEL_POLL_INTERVAL_MS * 3,
+  90000,
+);
+const channelWorkerHolderId =
+  'channel-worker-' +
+  String(process.pid || '0') +
+  '-' +
+  Date.now() +
+  '-' +
+  Math.random().toString(36).slice(2);
+let channelWorkerLeaseActive = false;
+
+export function logChannelRuntime(event, payload) {
+  console.log(`[channels] ${event}`, payload);
+}
+
+export function normalizeChannelSettings(connector, currentSettings) {
+  const source =
+    currentSettings && typeof currentSettings === 'object'
+      ? currentSettings
+      : {};
+  const next = {};
+  const fields = Array.isArray(connector && connector.settingsFields)
+    ? connector.settingsFields
+    : [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const field = fields[i];
+    const key = String(field.key || '');
+    const defaultValue = field.defaultValue == null ? '' : field.defaultValue;
+    next[key] = Object.prototype.hasOwnProperty.call(source, key)
+      ? source[key]
+      : defaultValue;
+  }
+  return next;
+}
+
+export function getChannelHandler(connectorId) {
+  const handler = getRegisteredChannelHandlerById(connectorId);
+  if (handler) return handler;
+  throw new Meteor.Error(
+    'channel-connector-not-supported',
+    `Unsupported channel connector: ${connectorId}`,
+  );
+}
+
+export function buildNormalizedChannels(current) {
+  return Array.isArray(current && current.communicationChannels)
+    ? [...current.communicationChannels]
+    : [];
+}
+
+export function findConfiguredChannelById(channels, channelId) {
+  const target = String(channelId || '').trim();
+  return (
+    (Array.isArray(channels) ? channels : []).find(
+      (item) => item && String(item.id || '') === target,
+    ) || null
+  );
+}
+
+export function findConfiguredChannelByLabel(channels, label) {
+  const target = normalizeChannelLabel(label);
+  if (!target) return null;
+  return (
+    (Array.isArray(channels) ? channels : []).find(
+      (item) =>
+        item &&
+        item.enabled !== false &&
+        normalizeChannelLabel(item.label) === target,
+    ) || null
+  );
+}
+
+async function saveChannelRuntimeState(channelId, updates) {
+  const source = updates && typeof updates === 'object' ? updates : {};
+  await AppSettings.updateAsync(
+    { _id: DEFAULT_SETTINGS_ID, 'communicationChannels.id': channelId },
+    {
+      $set: {
+        ...Object.fromEntries(
+          Object.keys(source).map((key) => [
+            `communicationChannels.$.${key}`,
+            source[key],
+          ]),
+        ),
+        updatedAt: new Date(),
+      },
+    },
+  );
+}
+
+export async function migrateLegacyChannelEvents() {
+  await ensureDefaultSettings();
+  const current = await AppSettings.findOneAsync(DEFAULT_SETTINGS_ID);
+  const channels = Array.isArray(current && current.communicationChannels)
+    ? current.communicationChannels
+    : [];
+  let changed = false;
+  const nextChannels = [];
+
+  for (let i = 0; i < channels.length; i += 1) {
+    const channel =
+      channels[i] && typeof channels[i] === 'object'
+        ? { ...channels[i] }
+        : null;
+    if (!channel) continue;
+    if (
+      !channel.lastEventId &&
+      channel.lastEvent &&
+      typeof channel.lastEvent === 'object'
+    ) {
+      const savedEvent = await insertChannelEvent({
+        ...channel.lastEvent,
+        label: String(channel.label || ''),
+        channelId: String(channel.id || ''),
+        connectorId: String(channel.connectorId || channel.type || ''),
+      });
+      channel.lastEventId = String((savedEvent && savedEvent._id) || '');
+      channel.lastEventPreview = buildChannelEventPreview(savedEvent);
+      delete channel.lastEvent;
+      changed = true;
+    }
+    nextChannels.push(channel);
+  }
+
+  if (!changed) return;
+
+  await AppSettings.updateAsync(
+    { _id: DEFAULT_SETTINGS_ID },
+    {
+      $set: {
+        communicationChannels: nextChannels,
+        updatedAt: new Date(),
+      },
+    },
+  );
+
+  logChannelRuntime('legacy.events.migrated', { count: nextChannels.length });
+}
+
+async function triggerChannelMentionRecompute(channelLabel) {
+  const label = normalizeChannelLabel(channelLabel);
+  if (!label) return;
+  const { recomputeSheetsMentioningChannel } =
+    await import('../../sheets/index.js');
+  await recomputeSheetsMentioningChannel(label);
+}
+
+async function applyChannelEvent(channel, payload, nextUid) {
+  const handler = getChannelHandler(channel.connectorId);
+  const handled = await handler.normalizeEvent({
+    channel,
+    eventType: payload && payload.event,
+    payload,
+  });
+  const normalizedMessage =
+    handled && handled.message && typeof handled.message === 'object'
+      ? {
+          ...handled.message,
+          event: String(
+            handled.event || (payload && payload.event) || 'message.new',
+          ),
+          label: String(channel.label || ''),
+        }
+      : {
+          event: String((payload && payload.event) || 'message.new'),
+          label: String(channel.label || ''),
+        };
+
+  const savedEvent = await insertChannelEvent(normalizedMessage);
+  await saveChannelRuntimeState(channel.id, {
+    status: 'connected',
+    watchError: '',
+    lastEventId: String((savedEvent && savedEvent._id) || ''),
+    lastEventPreview: buildChannelEventPreview(savedEvent),
+    lastEventAt: new Date(),
+    lastSeenUid: Number(nextUid) || 0,
+    lastPolledAt: new Date(),
+  });
+
+  await triggerChannelMentionRecompute(channel.label);
+}
+
+async function pollSingleChannel(channel) {
+  const channelId = String((channel && channel.id) || '');
+  if (!channelId) {
+    logChannelRuntime('poll.skip', { reason: 'missing-id' });
+    return {
+      channelId: '',
+      label: '',
+      skipped: true,
+      reason: 'missing-id',
+      events: 0,
+    };
+  }
+  if (activeChannelPolls.has(channelId)) {
+    logChannelRuntime('poll.skip', {
+      channelId,
+      label: String((channel && channel.label) || ''),
+      reason: 'already-polling',
+    });
+    return {
+      channelId,
+      label: String((channel && channel.label) || ''),
+      skipped: true,
+      reason: 'already-polling',
+      events: 0,
+    };
+  }
+
+  activeChannelPolls.add(channelId);
+  try {
+    const connector = getRegisteredChannelConnectorById(channel.connectorId);
+    if (!connector || connector.supportsReceive === false) {
+      logChannelRuntime('poll.skip', {
+        channelId,
+        label: String((channel && channel.label) || ''),
+        reason: 'receive-not-supported',
+      });
+      return {
+        channelId,
+        label: String((channel && channel.label) || ''),
+        skipped: true,
+        reason: 'receive-not-supported',
+        events: 0,
+      };
+    }
+    const handler = getChannelHandler(connector.id);
+    if (typeof handler.subscribe === 'function') {
+      logChannelRuntime('poll.skip', {
+        channelId,
+        label: String((channel && channel.label) || ''),
+        reason: 'subscribe-supported',
+      });
+      return {
+        channelId,
+        label: String((channel && channel.label) || ''),
+        skipped: true,
+        reason: 'subscribe-supported',
+        events: 0,
+      };
+    }
+    if (activeChannelSubscriptions.has(channelId)) {
+      logChannelRuntime('poll.skip', {
+        channelId,
+        label: String((channel && channel.label) || ''),
+        reason: 'active-subscription',
+      });
+      return {
+        channelId,
+        label: String((channel && channel.label) || ''),
+        skipped: true,
+        reason: 'active-subscription',
+        events: 0,
+      };
+    }
+    if (typeof handler.poll !== 'function') {
+      logChannelRuntime('poll.skip', {
+        channelId,
+        label: String((channel && channel.label) || ''),
+        reason: 'missing-poll-handler',
+      });
+      return {
+        channelId,
+        label: String((channel && channel.label) || ''),
+        skipped: true,
+        reason: 'missing-poll-handler',
+        events: 0,
+      };
+    }
+
+    const result = await handler.poll({
+      channel,
+      settings: normalizeChannelSettings(connector, channel.settings),
+    });
+
+    const events = Array.isArray(result && result.events) ? result.events : [];
+    const lastSeenUid =
+      Number(result && result.lastSeenUid) || Number(channel.lastSeenUid) || 0;
+
+    if (!events.length) {
+      logChannelRuntime('poll.channel.complete', {
+        channelId,
+        label: String((channel && channel.label) || ''),
+        events: 0,
+        lastSeenUid,
+      });
+      await saveChannelRuntimeState(channelId, {
+        status: 'connected',
+        watchError: '',
+        lastSeenUid,
+        lastPolledAt: new Date(),
+      });
+      return {
+        channelId,
+        label: String((channel && channel.label) || ''),
+        ok: true,
+        events: 0,
+        lastSeenUid,
+      };
+    }
+
+    for (let i = 0; i < events.length; i += 1) {
+      const event = events[i];
+      const eventUid = Number(event && event.uid) || lastSeenUid;
+      await applyChannelEvent(channel, event, eventUid);
+    }
+    logChannelRuntime('poll.channel.complete', {
+      channelId,
+      label: String((channel && channel.label) || ''),
+      events: events.length,
+      lastSeenUid,
+    });
+    return {
+      channelId,
+      label: String((channel && channel.label) || ''),
+      ok: true,
+      events: events.length,
+      lastSeenUid,
+    };
+  } catch (error) {
+    const message = String(
+      (error && (error.reason || error.message)) ||
+        error ||
+        'Channel poll failed',
+    ).trim();
+    logChannelRuntime('poll.failed', {
+      channelId,
+      label: String((channel && channel.label) || ''),
+      message,
+    });
+    await saveChannelRuntimeState(channelId, {
+      status: 'error',
+      watchError: message,
+      lastPolledAt: new Date(),
+    });
+    return {
+      channelId,
+      label: String((channel && channel.label) || ''),
+      ok: false,
+      events: 0,
+      error: message,
+    };
+  } finally {
+    activeChannelPolls.delete(channelId);
+  }
+}
+
+export async function pollEnabledChannels() {
+  await ensureDefaultSettings();
+  const current = await AppSettings.findOneAsync(DEFAULT_SETTINGS_ID);
+  const channels = buildNormalizedChannels(current)
+    .filter((channel) => channel && channel.enabled !== false)
+    .filter((channel) => {
+      const label = normalizeChannelLabel(channel.label);
+      return !!label;
+    });
+
+  logChannelRuntime('poll.scan.start', {
+    totalConfigured: Array.isArray(current && current.communicationChannels)
+      ? current.communicationChannels.length
+      : 0,
+    enabledWithLabels: channels.length,
+    labels: channels.map((channel) => String((channel && channel.label) || '')),
+  });
+
+  const results = [];
+  for (let i = 0; i < channels.length; i += 1) {
+    results.push(await pollSingleChannel(channels[i]));
+  }
+
+  const summary = {
+    total: channels.length,
+    polled: results.filter((item) => item && item.ok).length,
+    skipped: results.filter((item) => item && item.skipped).length,
+    failed: results.filter((item) => item && item.ok === false).length,
+    events: results.reduce(
+      (sum, item) => sum + (Number(item && item.events) || 0),
+      0,
+    ),
+    results,
+  };
+  logChannelRuntime('poll.scan.complete', summary);
+  return summary;
+}
+
+async function stopChannelSubscription(channelId) {
+  const key = String(channelId || '').trim();
+  if (!key || !activeChannelSubscriptions.has(key)) return;
+  const cleanup = activeChannelSubscriptions.get(key);
+  activeChannelSubscriptions.delete(key);
+  try {
+    if (typeof cleanup === 'function') {
+      await cleanup();
+    } else if (cleanup && typeof cleanup.unsubscribe === 'function') {
+      await cleanup.unsubscribe();
+    }
+  } catch (error) {
+    logChannelRuntime('subscribe.stop.failed', {
+      channelId: key,
+      message: error && error.message ? error.message : String(error),
+    });
+  }
+}
+
+async function stopAllChannelSubscriptions() {
+  const channelIds = Array.from(activeChannelSubscriptions.keys());
+  for (let i = 0; i < channelIds.length; i += 1) {
+    await stopChannelSubscription(channelIds[i]);
+  }
+}
+
+async function acquireChannelWorkerLease() {
+  await ensureDefaultSettings();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + CHANNEL_WORKER_LEASE_MS);
+  const updated = await AppSettings.updateAsync(
+    {
+      _id: DEFAULT_SETTINGS_ID,
+      $or: [
+        { 'runtimeLocks.channelWorker.expiresAt': { $exists: false } },
+        { 'runtimeLocks.channelWorker.expiresAt': { $lte: now } },
+        { 'runtimeLocks.channelWorker.holderId': channelWorkerHolderId },
+      ],
+    },
+    {
+      $set: {
+        'runtimeLocks.channelWorker.holderId': channelWorkerHolderId,
+        'runtimeLocks.channelWorker.acquiredAt': now,
+        'runtimeLocks.channelWorker.heartbeatAt': now,
+        'runtimeLocks.channelWorker.expiresAt': expiresAt,
+        updatedAt: now,
+      },
+    },
+  );
+  if (updated > 0) return true;
+  const current = await AppSettings.findOneAsync(DEFAULT_SETTINGS_ID, {
+    fields: { runtimeLocks: 1 },
+  });
+  return (
+    String(
+      current &&
+        current.runtimeLocks &&
+        current.runtimeLocks.channelWorker &&
+        current.runtimeLocks.channelWorker.holderId,
+    ).trim() === channelWorkerHolderId
+  );
+}
+
+async function releaseChannelWorkerLease() {
+  try {
+    await AppSettings.updateAsync(
+      {
+        _id: DEFAULT_SETTINGS_ID,
+        'runtimeLocks.channelWorker.holderId': channelWorkerHolderId,
+      },
+      {
+        $unset: {
+          'runtimeLocks.channelWorker': '',
+        },
+        $set: {
+          updatedAt: new Date(),
+        },
+      },
+    );
+  } catch (error) {
+    logChannelRuntime('worker.lease.release_failed', {
+      holderId: channelWorkerHolderId,
+      message: error && error.message ? error.message : String(error),
+    });
+  }
+}
+
+async function ensureChannelSubscription(channel) {
+  const channelId = String((channel && channel.id) || '').trim();
+  if (!channelId) return;
+  const connector = getRegisteredChannelConnectorById(channel.connectorId);
+  const handler = connector ? getChannelHandler(connector.id) : null;
+  if (
+    !channel ||
+    channel.enabled === false ||
+    !connector ||
+    connector.supportsReceive === false ||
+    !handler ||
+    typeof handler.subscribe !== 'function'
+  ) {
+    await stopChannelSubscription(channelId);
+    return;
+  }
+  if (activeChannelSubscriptions.has(channelId)) return;
+  if (activeChannelSubscriptionStarts.has(channelId)) return;
+
+  const settings = normalizeChannelSettings(connector, channel.settings);
+  activeChannelSubscriptionStarts.add(channelId);
+  try {
+    const cleanup = await handler.subscribe({
+      channel,
+      settings,
+      onEvent: async ({ payload, nextUid }) => {
+        await applyChannelEvent(channel, payload, nextUid);
+      },
+      onError: async (error) => {
+        const message = String(
+          (error && (error.reason || error.message)) ||
+            error ||
+            'Channel subscription failed',
+        ).trim();
+        logChannelRuntime('subscribe.failed', {
+          channelId,
+          label: String((channel && channel.label) || ''),
+          message,
+        });
+        await saveChannelRuntimeState(channelId, {
+          status: 'error',
+          watchError: message,
+          lastPolledAt: new Date(),
+        });
+        await stopChannelSubscription(channelId);
+      },
+      onState: async (state) => {
+        const source = state && typeof state === 'object' ? state : {};
+        await saveChannelRuntimeState(channelId, {
+          status: 'connected',
+          watchError: '',
+          ...(Object.prototype.hasOwnProperty.call(source, 'lastSeenUid')
+            ? { lastSeenUid: Number(source.lastSeenUid) || 0 }
+            : {}),
+          lastPolledAt: new Date(),
+        });
+      },
+    });
+    activeChannelSubscriptions.set(channelId, cleanup || true);
+    logChannelRuntime('subscribe.started', {
+      channelId,
+      label: String((channel && channel.label) || ''),
+      connectorId: String((channel && channel.connectorId) || ''),
+    });
+  } catch (error) {
+    logChannelRuntime('subscribe.start_failed', {
+      channelId,
+      label: String((channel && channel.label) || ''),
+      message: error && error.message ? error.message : String(error),
+    });
+  } finally {
+    activeChannelSubscriptionStarts.delete(channelId);
+  }
+}
+
+async function reconcileChannelSubscriptions() {
+  await ensureDefaultSettings();
+  const current = await AppSettings.findOneAsync(DEFAULT_SETTINGS_ID);
+  const channels = buildNormalizedChannels(current);
+  const activeIds = new Set();
+
+  for (let i = 0; i < channels.length; i += 1) {
+    const channel = channels[i];
+    if (!channel) continue;
+    const channelId = String(channel.id || '').trim();
+    if (channelId) activeIds.add(channelId);
+    await ensureChannelSubscription(channel);
+  }
+
+  const subscribedIds = Array.from(activeChannelSubscriptions.keys());
+  for (let i = 0; i < subscribedIds.length; i += 1) {
+    const channelId = subscribedIds[i];
+    if (!activeIds.has(channelId)) {
+      await stopChannelSubscription(channelId);
+    }
+  }
+}
+
+export function startChannelPollingWorker() {
+  if (!Meteor.isServer || channelPollingWorkerStarted) return;
+  channelPollingWorkerStarted = true;
+  logChannelRuntime('worker.started', {
+    intervalMs: CHANNEL_POLL_INTERVAL_MS,
+    holderId: channelWorkerHolderId,
+  });
+  Meteor.startup(() => {
+    const tick = async (phase) => {
+      const hasLease = await acquireChannelWorkerLease();
+      if (!hasLease) {
+        if (channelWorkerLeaseActive) {
+          channelWorkerLeaseActive = false;
+          await stopAllChannelSubscriptions();
+          logChannelRuntime('worker.lease.lost', {
+            holderId: channelWorkerHolderId,
+          });
+        } else {
+          logChannelRuntime('worker.lease.standby', {
+            holderId: channelWorkerHolderId,
+          });
+        }
+        return;
+      }
+      if (!channelWorkerLeaseActive) {
+        channelWorkerLeaseActive = true;
+        logChannelRuntime('worker.lease.acquired', {
+          holderId: channelWorkerHolderId,
+        });
+      }
+      try {
+        await reconcileChannelSubscriptions();
+      } catch (error) {
+        logChannelRuntime(`subscribe.${phase}.failed`, {
+          message: error && error.message ? error.message : String(error),
+        });
+      }
+      try {
+        await pollEnabledChannels();
+      } catch (error) {
+        logChannelRuntime(`poll.${phase}.failed`, {
+          message: error && error.message ? error.message : String(error),
+        });
+      }
+    };
+
+    Meteor.setTimeout(() => {
+      tick('startup').catch((error) => {
+        logChannelRuntime('worker.tick.startup_failed', {
+          message: error && error.message ? error.message : String(error),
+        });
+      });
+    }, 5000);
+    Meteor.setInterval(() => {
+      tick('interval').catch((error) => {
+        logChannelRuntime('worker.tick.interval_failed', {
+          message: error && error.message ? error.message : String(error),
+        });
+      });
+    }, CHANNEL_POLL_INTERVAL_MS);
+
+    const release = () => {
+      stopAllChannelSubscriptions().catch(() => {});
+      releaseChannelWorkerLease().catch(() => {});
+    };
+    process.once('SIGINT', release);
+    process.once('SIGTERM', release);
+    process.once('exit', release);
+  });
+}
+
+export function isChannelPollingWorkerStarted() {
+  return channelPollingWorkerStarted;
+}

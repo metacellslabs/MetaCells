@@ -51,6 +51,42 @@ export function clearSpillSheetState(app, sheetId) {
   };
 }
 
+export function clearSpillEntriesForRows(app, sheetId, rowIndexes) {
+  var model = ensureSpillModel(app);
+  var sheetState = ensureSheetState(model, sheetId);
+  var rows = Array.isArray(rowIndexes) ? rowIndexes : [];
+  if (!sheetState || !rows.length) return;
+
+  var rowsMap = {};
+  for (var i = 0; i < rows.length; i++) {
+    var rowIndex = Number(rows[i]);
+    if (!Number.isFinite(rowIndex) || rowIndex < 1) continue;
+    rowsMap[rowIndex] = true;
+  }
+
+  var sourceIds = Object.keys(sheetState.bySource);
+  for (var sourceIndex = 0; sourceIndex < sourceIds.length; sourceIndex++) {
+    var sourceCellId = sourceIds[sourceIndex];
+    var entry = sheetState.bySource[sourceCellId];
+    var range = entry && entry.range ? entry.range : null;
+    if (!range) continue;
+    var overlapsDirtyRows = false;
+    for (var row = range.startRow; row <= range.endRow; row++) {
+      if (rowsMap[row]) {
+        overlapsDirtyRows = true;
+        break;
+      }
+    }
+    if (!overlapsDirtyRows) continue;
+    if (entry && Array.isArray(entry.coveredCellIds)) {
+      for (var coveredIndex = 0; coveredIndex < entry.coveredCellIds.length; coveredIndex++) {
+        delete sheetState.coveredToSource[entry.coveredCellIds[coveredIndex]];
+      }
+    }
+    delete sheetState.bySource[sourceCellId];
+  }
+}
+
 export function setSpillEntry(app, sheetId, sourceCellId, payload) {
   var model = ensureSpillModel(app);
   var sheetState = ensureSheetState(model, sheetId);
@@ -68,6 +104,7 @@ export function setSpillEntry(app, sheetId, sourceCellId, payload) {
     ? payload.coveredCellIds.map(normalizeCellId).filter(Boolean)
     : [];
   var entry = {
+    kind: String((payload && payload.kind) || 'spill'),
     sourceCellId: normalizedSourceCellId,
     coveredCellIds: coveredCellIds,
     range: normalizeRange(payload && payload.range),

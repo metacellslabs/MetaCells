@@ -1,6 +1,11 @@
-import { moveAfterCellEditingEnter } from './editor-controller-runtime.js';
+import {
+  handleCellEditingArrowNavigate,
+  moveAfterCellEditingEnter,
+} from './editor-controller-runtime.js';
 
 export function bindCellInputEditingEvents(app, input) {
+  if (!input || input.dataset.boundEditing === 'true') return;
+  input.dataset.boundEditing = 'true';
   input.addEventListener('focus', (e) => {
     app.setActiveInput(e.target);
     app.syncAIDraftLock();
@@ -30,7 +35,13 @@ export function bindCellInputEditingEvents(app, input) {
 
   input.addEventListener('keydown', (e) => {
     if (!app.isEditingCell(input)) return;
-    if (app.handleMentionAutocompleteKeydown(e, input)) return;
+    if (app.handleMentionAutocompleteKeydown(e, input)) {
+      if (typeof e.stopPropagation === 'function') e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') {
+        e.stopImmediatePropagation();
+      }
+      return;
+    }
     if (
       (e.key === 'ArrowUp' ||
         e.key === 'ArrowDown' ||
@@ -44,6 +55,20 @@ export function bindCellInputEditingEvents(app, input) {
         extendRange: !!e.shiftKey,
         origin: 'cell',
       });
+      return;
+    }
+    if (
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.shiftKey &&
+      (e.key === 'ArrowUp' ||
+        e.key === 'ArrowDown' ||
+        e.key === 'ArrowLeft' ||
+        e.key === 'ArrowRight')
+    ) {
+      e.preventDefault();
+      handleCellEditingArrowNavigate(app, input, e.key, { origin: 'cell' });
       return;
     }
     if (!e.metaKey && !e.ctrlKey && e.key === 'Enter') {
@@ -115,7 +140,7 @@ export function bindOverlayEditingInputEvents(app) {
   overlayInput.addEventListener('blur', () => {
     var sourceInput = getSourceInput();
     if (!sourceInput) return;
-    sourceInput.value = overlayInput.value;
+    app.syncActiveEditorValue(overlayInput.value, { syncOverlay: false });
     app.handleCellEditingBlur(sourceInput, {
       wasEditing: app.isEditingCell(sourceInput),
       origin: 'cell',
@@ -127,9 +152,12 @@ export function bindOverlayEditingInputEvents(app) {
   overlayInput.addEventListener('keydown', (e) => {
     var sourceInput = getSourceInput();
     if (!sourceInput) return;
-    sourceInput.value = overlayInput.value;
+    app.syncActiveEditorValue(overlayInput.value, { syncOverlay: false });
     if (app.handleMentionAutocompleteKeydown(e, overlayInput)) {
-      sourceInput.value = overlayInput.value;
+      if (typeof e.stopPropagation === 'function') e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') {
+        e.stopImmediatePropagation();
+      }
       return;
     }
     if (
@@ -146,7 +174,25 @@ export function bindOverlayEditingInputEvents(app) {
         extendRange: !!e.shiftKey,
         origin: 'cell',
       });
-      overlayInput.value = sourceInput.value;
+      app.syncActiveEditorValue(sourceInput.value);
+      return;
+    }
+    if (
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.shiftKey &&
+      app.isEditingCell(sourceInput) &&
+      (e.key === 'ArrowUp' ||
+        e.key === 'ArrowDown' ||
+        e.key === 'ArrowLeft' ||
+        e.key === 'ArrowRight')
+    ) {
+      e.preventDefault();
+      app.syncActiveEditorValue(overlayInput.value, { syncOverlay: false });
+      handleCellEditingArrowNavigate(app, sourceInput, e.key, {
+        origin: 'cell',
+      });
       return;
     }
     if (!e.metaKey && !e.ctrlKey && e.key === 'Enter') {
@@ -155,7 +201,6 @@ export function bindOverlayEditingInputEvents(app) {
         return;
       }
       e.preventDefault();
-      sourceInput.value = overlayInput.value;
       app.handleCellEditingEnter(sourceInput, { origin: 'cell' });
       moveAfterCellEditingEnter(app, sourceInput, { reverse: !!e.shiftKey });
       return;
@@ -168,7 +213,6 @@ export function bindOverlayEditingInputEvents(app) {
     ) {
       e.preventDefault();
       app.handleCellEditingEscape(sourceInput);
-      overlayInput.value = sourceInput.value;
       return;
     }
   });
@@ -176,9 +220,9 @@ export function bindOverlayEditingInputEvents(app) {
   overlayInput.addEventListener('input', () => {
     var sourceInput = getSourceInput();
     if (!sourceInput) return;
-    sourceInput.value = overlayInput.value;
+    app.syncActiveEditorValue(overlayInput.value, { syncOverlay: false });
     app.handleCellInputDraft(sourceInput, { origin: 'cell' });
-    overlayInput.value = sourceInput.value;
+    app.syncActiveEditorValue(sourceInput.value);
   });
 
   overlayInput.addEventListener('paste', (e) => {
@@ -191,7 +235,7 @@ export function bindOverlayEditingInputEvents(app) {
     app.applyPastedText(text);
     var sourceInput = getSourceInput();
     if (!sourceInput) return;
-    overlayInput.value = sourceInput.value;
+    app.syncActiveEditorValue(sourceInput.value);
   });
 
   overlayInput.addEventListener('copy', (e) => {

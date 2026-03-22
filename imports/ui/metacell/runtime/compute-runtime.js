@@ -1,60 +1,68 @@
 import { Meteor } from 'meteor/meteor';
-import { AI_MODE } from './constants.js';
 import { traceCellUpdateClient } from '../../../lib/cell-update-profile.js';
 import {
-  buildCellRenderModel,
-  isChannelSendCommandRaw,
-} from './cell-render-model.js';
+  collectLocalChannelCommandRuntimeState,
+  getRenderTargetsForComputeResult,
+  restoreLocalChannelCommandRuntimeState,
+  syncFormulaBarWithActiveCell,
+} from './compute-support-runtime.js';
 import {
-  applySpillVisualStateFromModel,
-  clearSpillVisualState,
-} from './spill-runtime.js';
+  applyRightOverflowText,
+  measureOutputRequiredWidth,
+  updateWrappedRowHeights,
+} from './compute-layout-runtime.js';
+import {
+  applyComputedCellRender,
+  clearComputedCellRenderState,
+} from './compute-render-runtime.js';
+import { getViewportInputRenderTargets } from './viewport-render-runtime.js';
 
-function collectLocalChannelCommandRuntimeState(app) {
-  if (!app || !app.storage || typeof app.storage.listAllCellIds !== 'function') {
-    return [];
-  }
-  var entries = app.storage.listAllCellIds();
-  var results = [];
-  for (var i = 0; i < entries.length; i++) {
-    var entry = entries[i];
-    if (!entry || !entry.sheetId || !entry.cellId) continue;
-    var sheetId = String(entry.sheetId || '');
-    var cellId = String(entry.cellId || '').toUpperCase();
-    var raw = String(app.storage.getCellValue(sheetId, cellId) || '');
-    if (!isChannelSendCommandRaw(raw)) continue;
-    results.push({
-      sheetId: sheetId,
-      cellId: cellId,
-      raw: raw,
-      displayValue: String(app.storage.getCellDisplayValue(sheetId, cellId) || ''),
-      value: String(app.storage.getCellComputedValue(sheetId, cellId) || ''),
-      state: String(app.storage.getCellState(sheetId, cellId) || ''),
-      error: String(app.storage.getCellError(sheetId, cellId) || ''),
-    });
-  }
-  return results;
+function getInputRowIndex(app, input) {
+  if (!input) return 0;
+  var row =
+    input.parentElement && input.parentElement.parentElement
+      ? input.parentElement.parentElement
+      : null;
+  if (row && Number(row.rowIndex) > 0) return Number(row.rowIndex);
+  var parsed =
+    typeof app.parseCellId === 'function' ? app.parseCellId(input.id) : null;
+  return parsed && parsed.row ? parsed.row : 0;
 }
 
-function restoreLocalChannelCommandRuntimeState(app, entries) {
-  var items = Array.isArray(entries) ? entries : [];
+function buildDirtyLayoutOptions(inputs) {
+  var dirtyRows = {};
+  var dirtyCount = 0;
+  var items = Array.isArray(inputs) ? inputs : [];
   for (var i = 0; i < items.length; i++) {
-    var entry = items[i] && typeof items[i] === 'object' ? items[i] : null;
-    if (!entry || !entry.sheetId || !entry.cellId) continue;
-    var currentRaw = String(
-      app.storage.getCellValue(entry.sheetId, entry.cellId) || '',
-    );
-    if (currentRaw !== String(entry.raw || '')) continue;
-    app.storage.setCellRuntimeState(entry.sheetId, entry.cellId, {
-      value: entry.value,
-      displayValue: entry.displayValue,
-      state: entry.state,
-      error: entry.error,
-    });
+    var input = items[i];
+    var rowIndex = getInputRowIndex(null, input);
+    if (!Number.isFinite(rowIndex) || rowIndex < 1 || dirtyRows[rowIndex]) continue;
+    dirtyRows[rowIndex] = true;
+    dirtyCount++;
   }
+  if (!dirtyCount) return null;
+  return {
+    rowIndexes: Object.keys(dirtyRows).map(function (rowIndex) {
+      return Number(rowIndex);
+    }),
+  };
+}
+
+function collectFormulaProbeInputs(app, options) {
+  if (!app) return [];
+  if (options && options.includeDetached && Array.isArray(app.inputs)) {
+    return app.inputs;
+  }
+  return typeof app.getMountedInputs === 'function'
+    ? app.getMountedInputs()
+    : app.inputs || [];
 }
 
 export function renderCurrentSheetFromStorage(app) {
+  var options =
+    arguments.length > 1 && arguments[1] && typeof arguments[1] === 'object'
+      ? arguments[1]
+      : {};
   if (app.isReportActive()) {
     app.renderReportLiveValues(true);
     return;
@@ -69,8 +77,9 @@ export function renderCurrentSheetFromStorage(app) {
   }
 
   var formulaCount = 0;
-  for (var i = 0; i < app.inputs.length; i++) {
-    var probeRaw = app.getRawCellValue(app.inputs[i].id);
+  var mountedInputs = collectFormulaProbeInputs(app);
+  for (var i = 0; i < mountedInputs.length; i++) {
+    var probeRaw = app.getRawCellValue(mountedInputs[i].id);
     if (
       probeRaw &&
       (probeRaw.charAt(0) === '=' ||
@@ -82,120 +91,54 @@ export function renderCurrentSheetFromStorage(app) {
   }
   var formulaDone = 0;
   app.updateCalcProgress(0, formulaCount);
-  var syncFormulaBarWithActiveCell = () => {
-    var activeInput = app.getActiveCellInput
-      ? app.getActiveCellInput()
-      : app.activeInput;
-    if (!activeInput || app.hasPendingLocalEdit()) return;
-    var rawValue = app.getRawCellValue(activeInput.id);
-    var attachment = app.parseAttachmentSource(rawValue);
-    app.formulaInput.value = attachment
-      ? String(
-          attachment.name ||
-            (attachment.converting
-              ? 'Converting file...'
-              : attachment.pending
-                ? 'Choose file'
-                : 'Attached file'),
-        )
-      : rawValue;
-  };
-  app.inputs.forEach((input) => {
+  var renderInputs = getViewportInputRenderTargets(app, mountedInputs, options);
+  app.renderedViewportInputCount = renderInputs.length;
+  app.lastRenderedViewportRowRange = null;
+  app.lastRenderedViewportReason = String(options.reason || '');
+  app.lastRenderedViewportAt = Date.now();
+  app.lastRenderedViewportInputIds = renderInputs.map(function (input) {
+    return input.id;
+  });
+  app.lastRenderedViewportRowRange =
+    renderInputs.length
+      ? {
+          startRow: Math.min.apply(
+            null,
+            renderInputs.map(function (input) {
+              return getInputRowIndex(app, input);
+            }),
+          ),
+          endRow: Math.max.apply(
+            null,
+            renderInputs.map(function (input) {
+              return getInputRowIndex(app, input);
+            }),
+          ),
+        }
+      : null;
+  renderInputs.forEach((input) => {
     try {
-      var model = buildCellRenderModel(
-        app,
-        app.activeSheetId,
-        input.id,
-        {
-          showFormulas: app.displayMode === 'formulas',
-          isEditing:
-            app && typeof app.isEditingCell === 'function'
-              ? app.isEditingCell(input)
-              : document.activeElement === input,
-        },
-      );
-
-      input.parentElement.classList.toggle(
-        'manual-formula',
-        app.aiService.getMode() === AI_MODE.manual && model.isFormula,
-      );
-      input.parentElement.classList.toggle('has-formula', model.isFormula);
-      input.parentElement.classList.toggle(
-        'empty-mentioned-cell',
-        model.highlightEmptyMentioned,
-      );
-      input.parentElement.classList.toggle(
-        'has-display-value',
-        String(model.displayValue == null ? '' : model.displayValue) !== '',
-      );
-      input.parentElement.classList.toggle('has-attachment', !!model.attachment);
-      input.parentElement.classList.toggle('has-error', !!model.errorHint);
-      if (model.errorHint) {
-        input.parentElement.setAttribute('data-error-hint', model.errorHint);
-      } else {
-        input.parentElement.removeAttribute('data-error-hint');
-      }
-      app.grid.renderCellValue(input, model.displayValue, model.isEditing, model.isFormula, {
-        literal: model.showFormulas ? true : model.literalDisplay,
-        attachment: model.attachment,
-        aiSkeleton: model.showAISkeleton,
-        aiSkeletonVariant: model.aiSkeletonVariant,
-        error: !!model.errorHint,
-        state: model.cellState,
-        alignRight: !model.showFormulas && model.formatMeta.isNumeric,
-        align: model.showFormulas ? 'left' : model.formatMeta.align,
-        wrapText: !model.showFormulas && model.formatMeta.wrapText,
-        bold: !model.showFormulas && model.formatMeta.bold,
-        italic: !model.showFormulas && model.formatMeta.italic,
-        backgroundColor: !model.showFormulas ? model.formatMeta.backgroundColor : '',
-        fontFamily: !model.showFormulas ? model.formatMeta.fontFamily : 'default',
-        fontSize: !model.showFormulas ? model.formatMeta.fontSize : 14,
-        borders: model.formatMeta.borders,
-        hasSchedule: !!model.cellSchedule,
-        scheduleTitle: model.scheduleTitle,
+      var model = applyComputedCellRender(app, input, {
+        showFormulas: app.displayMode === 'formulas',
       });
       if (model.isFormula) {
         formulaDone++;
         app.updateCalcProgress(formulaDone, formulaCount);
       }
     } catch (e) {
-      input.parentElement.classList.remove('manual-formula');
-      input.parentElement.classList.remove('has-formula');
-      input.parentElement.classList.remove('empty-mentioned-cell');
-      input.parentElement.classList.remove('has-display-value');
-      input.parentElement.classList.remove('has-attachment');
-      input.parentElement.classList.remove('has-error');
-      input.parentElement.removeAttribute('data-error-hint');
+      clearComputedCellRenderState(input, app);
     }
   });
 
-  updateWrappedRowHeights(app);
-  applyRightOverflowText(app);
+  var layoutOptions = buildDirtyLayoutOptions(renderInputs);
+  updateWrappedRowHeights(app, layoutOptions);
+  applyRightOverflowText(app, layoutOptions);
   app.applyDependencyHighlight();
-  syncFormulaBarWithActiveCell();
+  syncFormulaBarWithActiveCell(app);
   if (typeof app.syncEditorOverlay === 'function') app.syncEditorOverlay();
   app.syncAIModeUI();
   app.renderReportLiveValues(true);
   app.finishCalcProgress(formulaCount);
-}
-
-export function getRenderTargetsForComputeResult(
-  app,
-  computedValues,
-  didResort,
-) {
-  if (didResort) return app.inputs;
-  var values =
-    computedValues && typeof computedValues === 'object' ? computedValues : {};
-  var ids = Object.keys(values);
-  if (!ids.length) return [];
-  if (ids.length >= app.inputs.length) return app.inputs;
-  var targets = [];
-  for (var i = 0; i < ids.length; i++) {
-    var input = app.inputById[ids[i]];
-    if (input) targets.push(input);
-  }
-  return targets.length ? targets : [];
 }
 
 export function computeAll(app) {
@@ -220,8 +163,9 @@ export function computeAll(app) {
   app.ensureActiveCell();
 
   var formulaCount = 0;
-  for (var i = 0; i < app.inputs.length; i++) {
-    var probeRaw = app.getRawCellValue(app.inputs[i].id);
+  var computeProbeInputs = collectFormulaProbeInputs(app, { includeDetached: true });
+  for (var i = 0; i < computeProbeInputs.length; i++) {
+    var probeRaw = app.getRawCellValue(computeProbeInputs[i].id);
     if (
       probeRaw &&
       (probeRaw.charAt(0) === '=' ||
@@ -236,7 +180,10 @@ export function computeAll(app) {
 
   var didResort = app.applyAutoResort();
   var requestToken = ++app.computeRequestToken;
-  var activeSheetId = app.activeSheetId;
+  var activeSheetId =
+    typeof app.getVisibleSheetId === 'function'
+      ? app.getVisibleSheetId()
+      : app.activeSheetId;
   if (isManualTrigger) {
     app.isManualAIUpdating = true;
     app.manualUpdateRequestToken = requestToken;
@@ -279,7 +226,11 @@ export function computeAll(app) {
         finishManualUpdate();
         return;
       }
-      if (activeSheetId !== app.activeSheetId) {
+      var currentVisibleSheetId =
+        typeof app.getVisibleSheetId === 'function'
+          ? app.getVisibleSheetId()
+          : app.activeSheetId;
+      if (activeSheetId !== currentVisibleSheetId) {
         finishManualUpdate();
         return;
       }
@@ -314,135 +265,59 @@ export function computeAll(app) {
         computedValues,
         didResort,
       );
+      renderTargets = getViewportInputRenderTargets(app, renderTargets, {
+        alwaysIncludeInputs: renderTargets,
+      });
+      var renderSheetId =
+        typeof app.getVisibleSheetId === 'function'
+          ? app.getVisibleSheetId()
+          : app.activeSheetId;
       var renderFn = () => {
         renderTargets.forEach((input) => {
           try {
             var raw = app.getRawCellValue(input.id);
-            var isFormula =
-              !!raw &&
-              (raw.charAt(0) === '=' ||
-                raw.charAt(0) === '>' ||
-                raw.charAt(0) === '#' ||
-                raw.charAt(0) === "'");
-            var model = buildCellRenderModel(
-              app,
-              app.activeSheetId,
-              input.id,
-              {
-                raw: raw,
-                storedDisplay: app.storage.getCellDisplayValue(
-                  app.activeSheetId,
-                  input.id,
-                ),
-                storedComputed: app.storage.getCellComputedValue(
-                  app.activeSheetId,
-                  input.id,
-                ),
-                cellState: app.storage.getCellState(
-                  app.activeSheetId,
-                  input.id,
-                ),
-                errorHint: app.storage.getCellError(
-                  app.activeSheetId,
-                  input.id,
-                ),
-                generatedBy: app.storage.getGeneratedCellSource(
-                  app.activeSheetId,
-                  input.id,
-                ),
-                isEditing:
-                  app && typeof app.isEditingCell === 'function'
-                    ? app.isEditingCell(input)
-                    : document.activeElement === input,
-                showFormulas: app.displayMode === 'formulas',
-              },
-            );
-            input.parentElement.classList.toggle(
-              'manual-formula',
-              app.aiService.getMode() === AI_MODE.manual && model.isFormula,
-            );
-            input.parentElement.classList.toggle('has-formula', model.isFormula);
-            input.parentElement.classList.toggle(
-              'empty-mentioned-cell',
-              model.highlightEmptyMentioned,
-            );
-            input.parentElement.classList.toggle(
-              'has-display-value',
-              String(model.displayValue == null ? '' : model.displayValue) !== '',
-            );
-            input.parentElement.classList.toggle(
-              'has-attachment',
-              !!model.attachment,
-            );
-            input.parentElement.classList.toggle('has-error', !!model.errorHint);
-            if (model.errorHint) {
-              input.parentElement.setAttribute('data-error-hint', model.errorHint);
-            } else {
-              input.parentElement.removeAttribute('data-error-hint');
-            }
-            app.grid.renderCellValue(
-              input,
-              model.displayValue,
-              model.isEditing,
-              model.isFormula,
-              {
-                literal: model.showFormulas ? true : model.literalDisplay,
-                attachment: model.attachment,
-                aiSkeleton: model.showAISkeleton,
-                aiSkeletonVariant: model.aiSkeletonVariant,
-                error: !!model.errorHint,
-                state: model.cellState,
-                alignRight: !model.showFormulas && model.formatMeta.isNumeric,
-                align: model.showFormulas ? 'left' : model.formatMeta.align,
-                wrapText: !model.showFormulas && model.formatMeta.wrapText,
-                bold: !model.showFormulas && model.formatMeta.bold,
-                italic: !model.showFormulas && model.formatMeta.italic,
-                backgroundColor: !model.showFormulas
-                  ? model.formatMeta.backgroundColor
-                  : '',
-                fontFamily: !model.showFormulas ? model.formatMeta.fontFamily : 'default',
-                fontSize: !model.showFormulas ? model.formatMeta.fontSize : 14,
-                borders: model.formatMeta.borders,
-              },
-            );
+            var model = applyComputedCellRender(app, input, {
+              raw: raw,
+              storedDisplay: app.storage.getCellDisplayValue(
+                renderSheetId,
+                input.id,
+              ),
+              storedComputed: app.storage.getCellComputedValue(
+                renderSheetId,
+                input.id,
+              ),
+              cellState: app.storage.getCellState(
+                renderSheetId,
+                input.id,
+              ),
+              errorHint: app.storage.getCellError(
+                renderSheetId,
+                input.id,
+              ),
+              generatedBy: app.storage.getGeneratedCellSource(
+                renderSheetId,
+                input.id,
+              ),
+              showFormulas: app.displayMode === 'formulas',
+            });
             if (model.isFormula) {
               formulaDone++;
               app.updateCalcProgress(formulaDone, formulaCount);
             }
           } catch (e) {
-            input.parentElement.classList.remove('manual-formula');
-            input.parentElement.classList.remove('has-formula');
-            input.parentElement.classList.remove('has-display-value');
-            input.parentElement.classList.remove('has-attachment');
-            input.parentElement.classList.remove('has-error');
-            input.parentElement.removeAttribute('data-error-hint');
+            clearComputedCellRenderState(input, app);
           }
         });
       };
       if (renderTargets.length) {
         if (didResort) app.runWithAISuppressed(renderFn);
         else renderFn();
-        updateWrappedRowHeights(app);
-        applyRightOverflowText(app);
+        var layoutOptions = buildDirtyLayoutOptions(renderTargets);
+        updateWrappedRowHeights(app, layoutOptions);
+        applyRightOverflowText(app, layoutOptions);
       }
 
-      var activeInput = app.getActiveCellInput
-        ? app.getActiveCellInput()
-        : app.activeInput;
-      if (!app.hasPendingLocalEdit() && activeInput) {
-        var rawValue = app.getRawCellValue(activeInput.id);
-        var attachment = app.parseAttachmentSource(rawValue);
-        app.formulaInput.value = attachment
-          ? String(
-              attachment.name ||
-                (attachment.converting
-                  ? 'Converting file...'
-                  : attachment.pending
-                    ? 'Choose file'
-                    : 'Attached file'),
-            )
-          : rawValue;
-      }
+      syncFormulaBarWithActiveCell(app);
 
       app.syncAIModeUI();
       app.applyDependencyHighlight();
@@ -466,29 +341,12 @@ export function computeAll(app) {
     });
 }
 
-export function measureOutputRequiredWidth(app, output) {
-  if (!output) return 0;
-  var probe = output.cloneNode(true);
-  probe.classList.add('spill-overflow');
-  probe.style.position = 'fixed';
-  probe.style.left = '-99999px';
-  probe.style.top = '0';
-  probe.style.width = 'auto';
-  probe.style.maxWidth = 'none';
-  probe.style.visibility = 'hidden';
-  probe.style.pointerEvents = 'none';
-  probe.style.overflow = 'visible';
-  probe.style.whiteSpace = 'nowrap';
-  document.body.appendChild(probe);
-  var width = Math.ceil(probe.scrollWidth || probe.offsetWidth || 0);
-  probe.remove();
-  return width;
-}
-
 export function hasUncomputedCells(app) {
   if (app.isReportActive()) return false;
-  for (var i = 0; i < app.inputs.length; i++) {
-    var input = app.inputs[i];
+  var inputs =
+    typeof app.getMountedInputs === 'function' ? app.getMountedInputs() : app.inputs;
+  for (var i = 0; i < inputs.length; i++) {
+    var input = inputs[i];
     var raw = app.getRawCellValue(input.id);
     if (!raw || (raw.charAt(0) !== '=' && raw.charAt(0) !== '>')) continue;
 
@@ -509,167 +367,4 @@ export function startUncomputedMonitor(app) {
     if (!hasUncomputedCells(app)) return;
     app.computeAll();
   }, app.uncomputedMonitorMs);
-}
-
-export function applyRightOverflowText(app) {
-  var cellHasVisibleContent = (td, input) => {
-    if (!td || !input) return false;
-    var raw = String(app.getRawCellValue(input.id) || '').trim();
-    if (raw !== '') return true;
-
-    var shown = String(
-      td.dataset.computedValue == null ? '' : td.dataset.computedValue,
-    ).trim();
-    if (shown !== '') return true;
-
-    if (
-      td.classList.contains('has-display-value') ||
-      td.classList.contains('has-formula')
-    )
-      return true;
-
-    var output = td.querySelector('.cell-output');
-    var rendered = output ? String(output.textContent || '').trim() : '';
-    return rendered !== '';
-  };
-
-  if (typeof app.clearSpillSheetState === 'function') {
-    app.clearSpillSheetState(app.activeSheetId);
-  }
-  clearSpillVisualState(app);
-
-  for (var rowIndex = 1; rowIndex < app.table.rows.length; rowIndex++) {
-    var row = app.table.rows[rowIndex];
-    for (var colIndex = 1; colIndex < row.cells.length; colIndex++) {
-      var td = row.cells[colIndex];
-      var input = td.querySelector('.cell-anchor-input');
-      if (!input) continue;
-      if (app.isEditingCell(input)) continue;
-
-      var output = td.querySelector('.cell-output');
-      if (!output) continue;
-      if (output.querySelector('table')) continue;
-      if (td.classList.contains('display-wrap')) continue;
-      if (
-        td.classList.contains('display-align-center') ||
-        td.classList.contains('display-align-right')
-      )
-        continue;
-
-      var value = String(
-        td.dataset.computedValue == null ? '' : td.dataset.computedValue,
-      );
-      if (!value || value.indexOf('\n') !== -1) continue;
-
-      var immediateNext = row.cells[colIndex + 1];
-      if (!immediateNext) continue;
-      var immediateNextInput = immediateNext.querySelector('.cell-anchor-input');
-      if (!immediateNextInput) continue;
-      if (app.isEditingCell(immediateNextInput)) continue;
-      if (cellHasVisibleContent(immediateNext, immediateNextInput)) continue;
-
-      var baseWidth = td.clientWidth;
-      output.classList.add('spill-overflow');
-      output.style.width = baseWidth + 'px';
-      var requiredWidth = app.measureOutputRequiredWidth(output);
-      if (requiredWidth <= baseWidth + 1) {
-        output.classList.remove('spill-overflow');
-        output.style.width = '';
-        continue;
-      }
-
-      var spanWidth = td.offsetWidth;
-      var coveredCells = [];
-      for (var nextCol = colIndex + 1; nextCol < row.cells.length; nextCol++) {
-        var nextTd = row.cells[nextCol];
-        var nextInput = nextTd.querySelector('.cell-anchor-input');
-        if (!nextInput) break;
-        if (app.isEditingCell(nextInput)) break;
-        if (cellHasVisibleContent(nextTd, nextInput)) break;
-        spanWidth += nextTd.offsetWidth;
-        coveredCells.push(nextTd);
-      }
-
-      if (spanWidth <= baseWidth) {
-        output.classList.remove('spill-overflow');
-        output.style.width = '';
-        continue;
-      }
-      var appliedWidth = Math.min(spanWidth, requiredWidth);
-      output.style.width = appliedWidth + 'px';
-      td.classList.add('spill-source');
-      var coveredCellIds = [];
-      for (var c = 0; c < coveredCells.length; c++) {
-        coveredCells[c].classList.add('spill-covered');
-        var coveredInput = coveredCells[c].querySelector('.cell-anchor-input');
-        if (coveredInput) {
-          coveredCellIds.push(String(coveredInput.id || '').toUpperCase());
-        }
-      }
-      if (typeof app.setSpillEntry === 'function') {
-        app.setSpillEntry(app.activeSheetId, input.id, {
-          coveredCellIds: coveredCellIds,
-          range: {
-            startCol: colIndex,
-            endCol: colIndex + coveredCells.length,
-            startRow: rowIndex,
-            endRow: rowIndex,
-          },
-          requiredWidth: requiredWidth,
-          appliedWidth: appliedWidth,
-        });
-      }
-    }
-  }
-  applySpillVisualStateFromModel(app, app.activeSheetId);
-}
-
-function updateWrappedRowHeights(app) {
-  if (!app.grid || !app.table || !app.table.rows || !app.table.rows.length)
-    return;
-  var defaultHeight = Number(app.grid.defaultRowHeight || 24);
-  var measuredHeights = {};
-
-  if (app.displayMode === 'formulas') {
-    for (var formulaRowIndex = 1; formulaRowIndex < app.table.rows.length; formulaRowIndex++) {
-      if (app.storage.getRowHeight(app.activeSheetId, formulaRowIndex) != null) continue;
-      app.grid.setRowHeight(formulaRowIndex, defaultHeight);
-    }
-    if (typeof app.grid.stabilizeHeaderMetrics === 'function') {
-      app.grid.stabilizeHeaderMetrics();
-    }
-    app.grid.updateTableSize();
-    return;
-  }
-
-  for (var i = 0; i < app.inputs.length; i++) {
-    var input = app.inputs[i];
-    if (!input || !input.parentElement) continue;
-    var td = input.parentElement;
-    if (!td.classList.contains('display-wrap')) continue;
-    if (td.classList.contains('editing')) continue;
-    var row = td.parentElement;
-    var rowIndex = row ? row.rowIndex : 0;
-    if (!rowIndex || rowIndex < 1) continue;
-    if (app.storage.getRowHeight(app.activeSheetId, rowIndex) != null) continue;
-    var output = td.querySelector('.cell-output');
-    if (!output) continue;
-    var nextHeight = Math.max(
-      defaultHeight,
-      Math.ceil(output.scrollHeight) + 6,
-    );
-    measuredHeights[rowIndex] = Math.max(
-      measuredHeights[rowIndex] || defaultHeight,
-      nextHeight,
-    );
-  }
-
-  for (var rowIndex = 1; rowIndex < app.table.rows.length; rowIndex++) {
-    if (app.storage.getRowHeight(app.activeSheetId, rowIndex) != null) continue;
-    app.grid.setRowHeight(rowIndex, measuredHeights[rowIndex] || defaultHeight);
-  }
-  if (typeof app.grid.stabilizeHeaderMetrics === 'function') {
-    app.grid.stabilizeHeaderMetrics();
-  }
-  app.grid.updateTableSize();
 }

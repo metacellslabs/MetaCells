@@ -2,6 +2,20 @@ import { Meteor } from 'meteor/meteor';
 import { Mongo } from 'meteor/mongo';
 import { check, Match } from 'meteor/check';
 import { Random } from 'meteor/random';
+import {
+  enqueueDurableJobAndWaitRuntime,
+  enqueueDurableJobRuntime,
+  waitForJobResultRuntime,
+} from './jobs-queue-runtime.js';
+import {
+  getHandlerConcurrency as getHandlerConcurrencyRuntime,
+  getHandlerHeartbeatIntervalMs as getHandlerHeartbeatIntervalMsRuntime,
+  getHandlerLeaseTimeoutMs as getHandlerLeaseTimeoutMsRuntime,
+  getHandlerRetryPolicy as getHandlerRetryPolicyRuntime,
+  getHandlerTimeoutMs as getHandlerTimeoutMsRuntime,
+  getJobHandlerMetadata as getJobHandlerMetadataRuntime,
+  validateRegisteredHandler as validateRegisteredHandlerRuntime,
+} from './jobs-handler-runtime.js';
 
 export const Jobs = new Mongo.Collection('jobs');
 export const JobLogs = new Mongo.Collection('job_logs');
@@ -61,56 +75,20 @@ function ensureHandler(type) {
   return handler;
 }
 
-function resolveHandlerValue(value, type, fallback) {
-  if (typeof value === 'function') {
-    const resolved = value(type);
-    return resolveHandlerValue(resolved, type, fallback);
-  }
-  const numeric = parseInt(value, 10);
-  return Number.isFinite(numeric) ? numeric : fallback;
-}
-
 function getHandlerRetryPolicy(type) {
-  const handler = ensureHandler(type);
-  const policy =
-    handler.retryPolicy && typeof handler.retryPolicy === 'object'
-      ? handler.retryPolicy
-      : {};
-  return {
-    maxAttempts: Math.max(
-      1,
-      resolveHandlerValue(
-        policy.maxAttempts,
-        type,
-        resolveHandlerValue(handler.maxAttempts, type, 1),
-      ),
-    ),
-    retryDelayMs: Math.max(
-      250,
-      resolveHandlerValue(
-        policy.retryDelayMs,
-        type,
-        resolveHandlerValue(handler.retryDelayMs, type, DEFAULT_RETRY_DELAY_MS),
-      ),
-    ),
-    backoffMultiplier: Math.max(
-      1,
-      Number(policy.backoffMultiplier || DEFAULT_BACKOFF_MULTIPLIER),
-    ),
-    maxRetryDelayMs: Math.max(
-      250,
-      resolveHandlerValue(
-        policy.maxRetryDelayMs,
-        type,
-        DEFAULT_MAX_RETRY_DELAY_MS,
-      ),
-    ),
-  };
+  return getHandlerRetryPolicyRuntime(
+    ensureHandler,
+    {
+      DEFAULT_RETRY_DELAY_MS,
+      DEFAULT_BACKOFF_MULTIPLIER,
+      DEFAULT_MAX_RETRY_DELAY_MS,
+    },
+    type,
+  );
 }
 
 function getHandlerConcurrency(type) {
-  const handler = ensureHandler(type);
-  return Math.max(1, resolveHandlerValue(handler.concurrency, type, 1));
+  return getHandlerConcurrencyRuntime(ensureHandler, type);
 }
 
 function getHandlerMaxAttempts(type) {
@@ -122,34 +100,27 @@ function getHandlerRetryDelayMs(type) {
 }
 
 function getHandlerLeaseTimeoutMs(type) {
-  const handler = ensureHandler(type);
-  return Math.max(
-    1_000,
-    resolveHandlerValue(handler.leaseTimeoutMs, type, DEFAULT_LEASE_TIMEOUT_MS),
+  return getHandlerLeaseTimeoutMsRuntime(
+    ensureHandler,
+    { DEFAULT_LEASE_TIMEOUT_MS },
+    type,
   );
 }
 
 function getHandlerHeartbeatIntervalMs(type) {
-  const handler = ensureHandler(type);
-  const requested = Math.max(
-    500,
-    resolveHandlerValue(
-      handler.heartbeatIntervalMs,
-      type,
-      DEFAULT_HEARTBEAT_INTERVAL_MS,
-    ),
-  );
-  return Math.min(
-    requested,
-    Math.max(500, Math.floor(getHandlerLeaseTimeoutMs(type) / 2)),
+  return getHandlerHeartbeatIntervalMsRuntime(
+    ensureHandler,
+    { DEFAULT_HEARTBEAT_INTERVAL_MS },
+    getHandlerLeaseTimeoutMs,
+    type,
   );
 }
 
 function getHandlerTimeoutMs(type) {
-  const handler = ensureHandler(type);
-  return Math.max(
-    1_000,
-    resolveHandlerValue(handler.timeoutMs, type, DEFAULT_TIMEOUT_MS),
+  return getHandlerTimeoutMsRuntime(
+    ensureHandler,
+    { DEFAULT_TIMEOUT_MS },
+    type,
   );
 }
 
@@ -774,42 +745,18 @@ function startRecoverySweep() {
 }
 
 function validateRegisteredHandler(type, options) {
-  const normalizedType = String(type || '').trim();
-  if (!normalizedType) throw new Error('Job handler requires a type');
-  if (!options || typeof options.run !== 'function') {
-    throw new Error(
-      `Job handler ${normalizedType} must provide a run(job) function`,
-    );
-  }
-  if (!options.payloadSchema) {
-    throw new Error(
-      `Job handler ${normalizedType} must provide a payloadSchema`,
-    );
-  }
-  if (!options.idempotencyStrategy) {
-    throw new Error(
-      `Job handler ${normalizedType} must provide an idempotencyStrategy`,
-    );
-  }
-  const timeoutMs = resolveHandlerValue(options.timeoutMs, normalizedType, NaN);
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new Error(
-      `Job handler ${normalizedType} must provide a positive timeoutMs`,
-    );
-  }
+  return validateRegisteredHandlerRuntime(type, options);
 }
 
 function getJobHandlerMetadata(type) {
-  const handler = ensureHandler(type);
-  return {
-    description: String(handler.description || ''),
-    payloadSchema: String(handler.payloadSchemaDescription || 'custom'),
-    idempotencyStrategy: String(handler.idempotencyStrategy || ''),
-    timeoutMs: getHandlerTimeoutMs(type),
-    leaseTimeoutMs: getHandlerLeaseTimeoutMs(type),
-    heartbeatIntervalMs: getHandlerHeartbeatIntervalMs(type),
-    retryPolicy: getHandlerRetryPolicy(type),
-  };
+  return getJobHandlerMetadataRuntime(
+    ensureHandler,
+    getHandlerTimeoutMs,
+    getHandlerLeaseTimeoutMs,
+    getHandlerHeartbeatIntervalMs,
+    getHandlerRetryPolicy,
+    type,
+  );
 }
 
 export function registerJobHandler(type, options) {
@@ -848,128 +795,74 @@ export async function enqueueDurableJob({
   leaseTimeoutMs,
   heartbeatIntervalMs,
 }) {
-  const normalizedType = String(type || '').trim();
-  if (!normalizedType) throw new Error('enqueueDurableJob requires a type');
-  const handler = ensureHandler(normalizedType);
-
-  const normalizedPayload = payload || {};
-  check(normalizedPayload, handler.payloadSchema || jobPayloadMatch);
-
-  const normalizedDedupeKey = String(dedupeKey || '').trim();
-  if (normalizedDedupeKey) {
-    const existing = await Jobs.findOneAsync({
-      type: normalizedType,
-      dedupeKey: normalizedDedupeKey,
-      status: {
-        $in: [
-          JOB_STATUS.QUEUED,
-          JOB_STATUS.LEASED,
-          JOB_STATUS.RUNNING,
-          JOB_STATUS.RETRYING,
-        ],
-      },
-    });
-    if (existing) {
-      await appendJobLog(existing, 'dedupe_hit', {
-        dedupeKey: normalizedDedupeKey,
-      });
-      return existing;
-    }
-  }
-
-  const createdAt = nowDate();
-  const jobDoc = {
-    type: normalizedType,
-    payload: normalizedPayload,
-    dedupeKey: normalizedDedupeKey,
-    status: JOB_STATUS.QUEUED,
-    attempts: 0,
-    maxAttempts: Math.max(
-      1,
-      parseInt(maxAttempts, 10) || getHandlerMaxAttempts(normalizedType),
-    ),
-    retryDelayMs: Math.max(
-      250,
-      parseInt(retryDelayMs, 10) || getHandlerRetryDelayMs(normalizedType),
-    ),
-    timeoutMs: Math.max(
-      1_000,
-      parseInt(timeoutMs, 10) || getHandlerTimeoutMs(normalizedType),
-    ),
-    leaseTimeoutMs: Math.max(
-      1_000,
-      parseInt(leaseTimeoutMs, 10) || getHandlerLeaseTimeoutMs(normalizedType),
-    ),
-    heartbeatIntervalMs: Math.max(
-      500,
-      parseInt(heartbeatIntervalMs, 10) ||
-        getHandlerHeartbeatIntervalMs(normalizedType),
-    ),
-    priority: parseInt(priority, 10) || 0,
-    runAt: runAt instanceof Date ? runAt : createdAt,
-    createdAt,
-    updatedAt: createdAt,
-    leasedAt: null,
-    startedAt: null,
-    completedAt: null,
-    heartbeatAt: null,
-    lockUntil: null,
-    lockToken: '',
-    lastError: '',
-    result: null,
-    handlerMeta: getJobHandlerMetadata(normalizedType),
-  };
-
-  const jobId = await Jobs.insertAsync(jobDoc);
-  const job = await Jobs.findOneAsync(jobId);
-  await appendJobLog(job, 'queued', {
-    dedupeKey: normalizedDedupeKey,
-    runAt: job && job.runAt,
-  });
-  scheduleDrain(normalizedType);
-  return job;
+  return enqueueDurableJobRuntime(
+    {
+      Jobs,
+      JOB_STATUS,
+      jobPayloadMatch,
+      nowDate,
+      ensureHandler,
+      getHandlerMaxAttempts,
+      getHandlerRetryDelayMs,
+      getHandlerTimeoutMs,
+      getHandlerLeaseTimeoutMs,
+      getHandlerHeartbeatIntervalMs,
+      getJobHandlerMetadata,
+      appendJobLog,
+      scheduleDrain,
+      check,
+    },
+    {
+      type,
+      payload,
+      dedupeKey,
+      priority,
+      maxAttempts,
+      retryDelayMs,
+      runAt,
+      timeoutMs,
+      leaseTimeoutMs,
+      heartbeatIntervalMs,
+    },
+  );
 }
 
 export async function waitForJobResult(jobId, options = {}) {
-  const timeoutMs = Math.max(
-    1_000,
-    parseInt(options.timeoutMs, 10) || DEFAULT_WAIT_TIMEOUT_MS,
+  return waitForJobResultRuntime(
+    {
+      Jobs,
+      JOB_STATUS,
+      DEFAULT_WAIT_TIMEOUT_MS,
+      DEFAULT_POLL_INTERVAL_MS,
+    },
+    jobId,
+    options,
   );
-  const pollIntervalMs = Math.max(
-    50,
-    parseInt(options.pollIntervalMs, 10) || DEFAULT_POLL_INTERVAL_MS,
-  );
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const job = await Jobs.findOneAsync(jobId, {
-      fields: {
-        status: 1,
-        result: 1,
-        lastError: 1,
-      },
-    });
-    if (!job) {
-      throw new Error(`Job ${jobId} not found`);
-    }
-    if (job.status === JOB_STATUS.COMPLETED) {
-      return job.result;
-    }
-    if (job.status === JOB_STATUS.FAILED) {
-      throw new Error(String(job.lastError || 'Job failed'));
-    }
-    if (job.status === JOB_STATUS.CANCELLED) {
-      throw new Error(String(job.lastError || 'Job cancelled'));
-    }
-    await new Promise((resolve) => Meteor.setTimeout(resolve, pollIntervalMs));
-  }
-
-  throw new Error(`Timed out waiting for job ${jobId}`);
 }
 
 export async function enqueueDurableJobAndWait(options = {}, waitOptions = {}) {
-  const job = await enqueueDurableJob(options);
-  return waitForJobResult(job && job._id, waitOptions);
+  return enqueueDurableJobAndWaitRuntime(
+    {
+      Jobs,
+      JOB_STATUS,
+      jobPayloadMatch,
+      nowDate,
+      ensureHandler,
+      getHandlerMaxAttempts,
+      getHandlerRetryDelayMs,
+      getHandlerTimeoutMs,
+      getHandlerLeaseTimeoutMs,
+      getHandlerHeartbeatIntervalMs,
+      getJobHandlerMetadata,
+      appendJobLog,
+      scheduleDrain,
+      check,
+      DEFAULT_WAIT_TIMEOUT_MS,
+      DEFAULT_POLL_INTERVAL_MS,
+    },
+    options,
+    waitOptions,
+  );
 }
 
 export function startJobsWorker() {

@@ -277,6 +277,19 @@ export class StorageService {
     this.storage.setRowHeight(sheetId, rowIndex, height);
   }
 
+  getSheetGridSize(sheetId) {
+    if (typeof this.storage.getSheetGridSize === 'function') {
+      return this.storage.getSheetGridSize(sheetId);
+    }
+    return { rows: 0, cols: 0 };
+  }
+
+  setSheetGridSize(sheetId, size) {
+    if (typeof this.storage.setSheetGridSize === 'function') {
+      this.storage.setSheetGridSize(sheetId, size);
+    }
+  }
+
   readTabs() {
     var parsed = this.storage.getTabs ? this.storage.getTabs() : [];
     var changed = false;

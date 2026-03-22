@@ -7,6 +7,19 @@ import {
   writeClipboardText,
 } from './browser-runtime.js';
 
+function publishFullscreenUi(app) {
+  if (app && typeof app.publishUiState === 'function') {
+    app.publishUiState();
+  }
+}
+
+function getFullscreenDraftValue(app) {
+  if (app.fullscreenEditMode === 'value') {
+    return String(app.fullscreenValueDraft || '');
+  }
+  return String(app.fullscreenFormulaDraft || '');
+}
+
 function wrapSelection(textarea, prefix, suffix, placeholder) {
   if (!textarea) return;
   var value = String(textarea.value || '');
@@ -62,21 +75,13 @@ function syncFullscreenModeButtons(app) {
 
 function syncFullscreenEditorFromMode(app) {
   if (!app.fullscreenEditor) return;
-  if (app.fullscreenEditMode === 'value') {
-    app.fullscreenEditor.value = String(app.fullscreenValueDraft || '');
-  } else {
-    app.fullscreenEditor.value = String(app.fullscreenFormulaDraft || '');
-  }
+  app.fullscreenEditor.value = getFullscreenDraftValue(app);
   syncFullscreenModeButtons(app);
   syncFullscreenPreview(app);
 }
 
 function syncFullscreenEditingUi(app) {
-  if (!app.fullscreenOverlay) return;
-  app.fullscreenOverlay.classList.toggle(
-    'fullscreen-is-editing',
-    !!app.fullscreenIsEditing,
-  );
+  publishFullscreenUi(app);
 }
 
 function updateFullscreenDraft(app) {
@@ -88,11 +93,26 @@ function updateFullscreenDraft(app) {
   }
 }
 
+function updateFullscreenDraftValue(app, value) {
+  var nextValue = String(value == null ? '' : value);
+  if (app.fullscreenEditMode === 'value') {
+    app.fullscreenValueDraft = nextValue;
+  } else {
+    app.fullscreenFormulaDraft = nextValue;
+  }
+  if (app.fullscreenEditor) {
+    app.fullscreenEditor.value = nextValue;
+  }
+  syncFullscreenPreview(app);
+  publishFullscreenUi(app);
+}
+
 function setFullscreenEditMode(app, mode) {
   var nextMode = mode === 'value' ? 'value' : 'formula';
   updateFullscreenDraft(app);
   app.fullscreenEditMode = nextMode;
   syncFullscreenEditorFromMode(app);
+  publishFullscreenUi(app);
 }
 
 function enterFullscreenEditing(app, mode) {
@@ -107,6 +127,10 @@ function enterFullscreenEditing(app, mode) {
       app.fullscreenEditor.value.length,
     );
   });
+}
+
+export function startFullscreenEditing(app, mode) {
+  enterFullscreenEditing(app, mode);
 }
 
 function runFullscreenMarkdownCommand(app, command) {
@@ -143,47 +167,26 @@ function saveFullscreenCell(app) {
   closeFullscreenCell(app);
 }
 
+export function setFullscreenDraft(app, value) {
+  updateFullscreenDraftValue(app, value);
+}
+
+export function setFullscreenMode(app, mode) {
+  setFullscreenEditMode(app, mode);
+}
+
+export function applyFullscreenMarkdownCommand(app, command) {
+  runFullscreenMarkdownCommand(app, command);
+  publishFullscreenUi(app);
+}
+
+export function saveFullscreenDraft(app) {
+  saveFullscreenCell(app);
+}
+
 export function setupFullscreenOverlay(app) {
-  var overlay = document.createElement('div');
-  overlay.className = 'fullscreen-overlay';
-  overlay.style.display = 'none';
-  overlay.innerHTML =
-    "<div class='fullscreen-panel'>" +
-    "<div class='fullscreen-toolbar'>" +
-    "<div class='fullscreen-toolbar-group'>" +
-    "<span class='fullscreen-cell-label'></span>" +
-    "<div class='fullscreen-mode-switch'>" +
-    "<button type='button' class='fullscreen-mode-button' data-mode='formula' title='Edit formula'>Formula</button>" +
-    "<button type='button' class='fullscreen-mode-button is-active' data-mode='value' title='Edit value'>Value</button>" +
-    "</div>" +
-    "<div class='fullscreen-preview-toggle'>" +
-    "<span class='fullscreen-preview-label'>Preview</span>" +
-    "<button type='button' class='fullscreen-edit-toggle' title='Edit' aria-label='Edit'><svg viewBox='0 0 24 24' aria-hidden='true' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><path d='M12 20h9'></path><path d='M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z'></path></svg></button>" +
-    "</div>" +
-    "<button type='button' class='fullscreen-md-button' data-cmd='heading' title='Heading'>H</button>" +
-    "<button type='button' class='fullscreen-md-button' data-cmd='bold' title='Bold'>B</button>" +
-    "<button type='button' class='fullscreen-md-button' data-cmd='italic' title='Italic'>I</button>" +
-    "<button type='button' class='fullscreen-md-button' data-cmd='list' title='Bullet list'>List</button>" +
-    "<button type='button' class='fullscreen-md-button' data-cmd='link' title='Link'>Link</button>" +
-    "<button type='button' class='fullscreen-md-button' data-cmd='code' title='Code'>Code</button>" +
-    "</div>" +
-    "<div class='fullscreen-toolbar-group'>" +
-    "<button type='button' class='fullscreen-save' title='Save'>Save</button>" +
-    "<button type='button' class='fullscreen-close' title='Close'>✕</button>" +
-    "</div>" +
-    "</div>" +
-    "<div class='fullscreen-content'>" +
-    "<div class='fullscreen-pane fullscreen-pane-editor'>" +
-    "<div class='fullscreen-pane-title'>Markdown</div>" +
-    "<textarea class='fullscreen-editor' spellcheck='false'></textarea>" +
-    "</div>" +
-    "<div class='fullscreen-pane fullscreen-pane-preview'>" +
-    "<div class='fullscreen-pane-title'>Preview</div>" +
-    "<div class='fullscreen-preview'></div>" +
-    "</div>" +
-    "</div>" +
-    "</div>";
-  document.body.appendChild(overlay);
+  var overlay = document.querySelector('.fullscreen-overlay');
+  if (!overlay) return;
 
   app.fullscreenOverlay = overlay;
   app.fullscreenOverlayContent = overlay.querySelector('.fullscreen-content');
@@ -201,6 +204,15 @@ export function setupFullscreenOverlay(app) {
   syncFullscreenEditingUi(app);
 
   overlay.addEventListener('click', (e) => {
+    var reactHandledControl =
+      e.target && e.target.closest
+        ? e.target.closest(
+            '.fullscreen-mode-button, .fullscreen-edit-toggle, .fullscreen-md-button, .fullscreen-save, .fullscreen-close',
+          )
+        : null;
+    if (reactHandledControl) {
+      return;
+    }
     var editToggle =
       e.target && e.target.closest
         ? e.target.closest('.fullscreen-edit-toggle')
@@ -250,7 +262,7 @@ export function setupFullscreenOverlay(app) {
   document.addEventListener('keydown', (e) => {
     if (
       !app.fullscreenOverlay ||
-      app.fullscreenOverlay.style.display === 'none'
+      app.fullscreenOverlay.hidden
     )
       return;
     if (app.fullscreenIsEditing && (e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -316,26 +328,22 @@ export function openFullscreenCell(app, input) {
   app.fullscreenValueDraft = String(
     renderedValue || storedDisplay || (raw == null ? '' : raw),
   );
-  if (app.fullscreenCellLabel) {
-    app.fullscreenCellLabel.textContent = cellId;
-  }
   syncFullscreenEditorFromMode(app);
   syncFullscreenEditingUi(app);
-  app.fullscreenOverlay.style.display = 'flex';
+  publishFullscreenUi(app);
 }
 
 export function closeFullscreenCell(app) {
   if (!app.fullscreenOverlay || !app.fullscreenOverlayContent) return;
   if (app.fullscreenEditor) app.fullscreenEditor.value = '';
   if (app.fullscreenPreview) app.fullscreenPreview.innerHTML = '';
-  if (app.fullscreenCellLabel) app.fullscreenCellLabel.textContent = '';
   app.fullscreenCellId = '';
   app.fullscreenEditMode = 'value';
   app.fullscreenIsEditing = false;
   app.fullscreenFormulaDraft = '';
   app.fullscreenValueDraft = '';
   syncFullscreenEditingUi(app);
-  app.fullscreenOverlay.style.display = 'none';
+  publishFullscreenUi(app);
 }
 
 export function buildPublishedReportUrl(app) {
