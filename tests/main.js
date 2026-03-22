@@ -1553,11 +1553,11 @@ describe('metacells', function () {
         assert.strictEqual(workbook.sheets['sheet-1'].cells.D30.value, 'PASS');
         assert.strictEqual(
           workbook.sheets['sheet-3'].cells.A2.source,
-          "'@idea: one-line value proposition",
+          "'@idea: write a one-line value proposition",
         );
         assert.strictEqual(
           workbook.sheets['sheet-3'].cells.A3.source,
-          '>5 потенциальных аудиторий для проекта @idea. по одной ЦА',
+          '>5 target customer segments for @idea, one per row',
         );
         assert.strictEqual(
           workbook.sheets['sheet-3'].cells.A4.source,
@@ -1565,7 +1565,7 @@ describe('metacells', function () {
         );
         assert.strictEqual(
           workbook.sheets['sheet-3'].cells.J2.source,
-          'пломбир для карликов',
+          'AI spreadsheet copilot for finance teams',
         );
       } finally {
         await Sheets.removeAsync({ _id: sheetId });
